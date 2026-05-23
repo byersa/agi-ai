@@ -11,6 +11,7 @@ import jakarta.websocket.CloseReason
 import jakarta.websocket.EndpointConfig
 import jakarta.websocket.Session
 import java.util.concurrent.ConcurrentHashMap
+import org.moqui.adk.AdkManager
 
 @CompileStatic
 class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
@@ -105,51 +106,78 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
                 logger.info("🧠 [AGI-AI WS] Processing userMessage for component: ${componentId}")
 
                 // Run the Gemini conversation loop in an asynchronous worker thread to avoid blocking WebSocket connection threads
+                // Run the ADK Agent loop in an asynchronous worker thread to avoid blocking WebSocket connection threads
                 Thread.start {
                     try {
-                        def ec = getEcf().getEci()
-                        
-                        // Grounding details / prompting logic
-                        def serviceResult = ec.service.sync().name("org.moqui.ai.GeminiServices.send#Prompt")
-                            .parameters([promptText: text, componentId: componentId])
-                            .call()
-                        
-                        String responseText = serviceResult.responseText
-                        if (responseText) {
-                            responseText = responseText.trim()
-                            
-                            // If response is JSON, treat as a visual canvas command
-                            if (responseText.startsWith("{") && responseText.endsWith("}")) {
-                                try {
-                                    def commandData = slurper.parseText(responseText)
-                                    Map commandPayload = [
-                                        type: "command",
-                                        componentId: componentId,
-                                        data: commandData
-                                    ]
-                                    session.getBasicRemote().sendText(new JsonBuilder(commandPayload).toString())
-                                    logger.info("🎯 [AGI-AI WS] Dispatched visual command payload back to client on channel ${channel}")
-                                } catch (Exception e) {
-                                    // Fallback to text notification
-                                    Map reply = [
-                                        type: "notification",
-                                        componentId: componentId,
-                                        text: responseText
-                                    ]
-                                    session.getBasicRemote().sendText(new JsonBuilder(reply).toString())
+                        String userId = "anonymous"
+                        String sid = (String) (payload.sessionId ?: channel)
+
+                        // Lazy init the ADK engine if needed
+                        AdkManager.lazyInit(getEcf())
+
+                        // Drive prompt asynchronously using official Google ADK dynamic runner
+                        AdkManager.runAgentSse(userId, sid, text,
+                            { Map event ->
+                                Map content = (Map) event.content
+                                if (content) {
+                                    List parts = (List) content.parts
+                                    if (parts) {
+                                        for (Object partObj : parts) {
+                                            Map part = (Map) partObj
+                                            String responseText = (String) part.text
+                                            if (responseText) {
+                                                responseText = responseText.trim()
+
+                                                // If response is JSON command, dispatch as a canvas instruction
+                                                if (responseText.startsWith("{") && responseText.endsWith("}")) {
+                                                    try {
+                                                        def commandData = slurper.parseText(responseText)
+                                                        Map commandPayload = [
+                                                            type: "command",
+                                                            componentId: componentId,
+                                                            data: commandData
+                                                        ]
+                                                        session.getBasicRemote().sendText(new JsonBuilder(commandPayload).toString())
+                                                        logger.info("🎯 [AGI-AI WS] Dispatched dynamic visual command payload back to client on channel ${channel}")
+                                                    } catch (Exception ex) {
+                                                        Map reply = [
+                                                            type: "notification",
+                                                            componentId: componentId,
+                                                            text: responseText
+                                                        ]
+                                                        session.getBasicRemote().sendText(new JsonBuilder(reply).toString())
+                                                    }
+                                                } else {
+                                                    // Stream text notification chunk to chat canvas bubble
+                                                    Map reply = [
+                                                        type: "notification",
+                                                        componentId: componentId,
+                                                        text: responseText
+                                                    ]
+                                                    session.getBasicRemote().sendText(new JsonBuilder(reply).toString())
+                                                    logger.info("💬 [AGI-AI WS] Relayed streaming chat notification to client on channel ${channel}")
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                            } else {
-                                Map reply = [
-                                    type: "notification",
-                                    componentId: componentId,
-                                    text: responseText
-                                ]
-                                session.getBasicRemote().sendText(new JsonBuilder(reply).toString())
-                                logger.info("💬 [AGI-AI WS] Relayed chat notification back to client on channel ${channel}")
+                            },
+                            { Throwable err ->
+                                if (err) {
+                                    logger.error("Error executing ADK Agent prompt", err)
+                                    try {
+                                        Map errorPayload = [
+                                            type: "error",
+                                            componentId: componentId,
+                                            message: "Error processing ADK prompt: " + err.getMessage()
+                                        ]
+                                        session.getBasicRemote().sendText(new JsonBuilder(errorPayload).toString())
+                                    } catch (Exception ex) {}
+                                }
                             }
-                        }
+                        )
                     } catch (Exception e) {
-                        logger.error("Error processing user message via Gemini", e)
+                        logger.error("Error processing user message via ADK", e)
                         try {
                             Map errorPayload = [
                                 type: "error",

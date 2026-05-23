@@ -2,6 +2,10 @@
 <moqui-conf xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
              xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-4.0.xsd">
 
+    <after-init-list>
+        <after-init name="AgiAdkLifecycleBinding" location="component://agi-ai/script/AgiAdkLifecycleBinding.groovy"/>
+    </after-init-list>
+
     <webapp-list>
         <webapp name="webroot">
             <endpoint path="/agi-ws/{channel}" class="org.moqui.ai.AgiWebSocketEndpoint" timeout="3600000" enabled="true"/>
