@@ -28,12 +28,34 @@ class AgiAITools {
                 .parameters([targetComponent: targetComponent, artifactPath: artifactPath])
                 .call()
             
-            return [
+            def resultPayload = [
                 success: true,
                 component: targetComponent,
                 path: artifactPath,
                 blueprint: serviceResult.blueprintJson ?: [:]
             ]
+
+            // Intercept and dispatch visual frame instantly down the active WebSocket connection
+            try {
+                def wsSessionObj = ec.context.get("webSocketSession")
+                if (wsSessionObj) {
+                    jakarta.websocket.Session wsSession = (jakarta.websocket.Session) wsSessionObj
+                    if (wsSession.isOpen()) {
+                        Map frame = [
+                            type: "visualFrame",
+                            tool: "get_artifact",
+                            componentId: ec.context.get("activeComponentId") ?: targetComponent,
+                            data: resultPayload
+                        ]
+                        wsSession.getBasicRemote().sendText(new groovy.json.JsonBuilder(frame).toString())
+                        logger.info("🎨 [AGI-AI TOOLS] Dispatched visual frame for get_artifact to WebSocket session: ${wsSession.id}")
+                    }
+                }
+            } catch (Exception ex) {
+                logger.error("❌ Failed to transmit visual frame down WebSocket", ex)
+            }
+
+            return resultPayload
         } catch (Exception e) {
             logger.error("❌ Failed to execute get_artifact tool", e)
             return [error: "Failed to execute tool: " + e.getMessage()]

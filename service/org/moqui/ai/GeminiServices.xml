@@ -14,4 +14,16 @@
             <script location="component://agi-ai/service/org/moqui/ai/GeminiServices.groovy"/>
         </actions>
     </service>
+
+    <service verb="load" noun="DynamicTools">
+        <description>Programmatically discover Ean's moqui-mcp tools and return them as Google ADK-compatible FunctionTool definitions.</description>
+        <out-parameters>
+            <parameter name="toolsList" type="List"><description>List of FunctionTool instances</description></parameter>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                context.toolsList = org.moqui.ai.AdkMcpBridge.getTools()
+            ]]></script>
+        </actions>
+    </service>
 </services>

@@ -42,15 +42,37 @@ You operate via strict declarative parameters. You communicate safely and determ
 Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of components.
 """
 
+    // Safely obtain active execution context
+    def ec = context.ec ?: org.moqui.impl.context.ExecutionContextFactoryImpl.getActiveExecutionContext()
+    List<FunctionTool> dynamicTools = []
+    if (ec) {
+        try {
+            def serviceResult = ec.service.sync().name("org.moqui.ai.AdkMcpBridge.load#DynamicTools").call()
+            if (serviceResult && serviceResult.toolsList) {
+                dynamicTools = (List<FunctionTool>) serviceResult.toolsList
+            }
+        } catch (Exception e) {
+            logger.warn("⚠️ Could not load dynamic MCP tools during lifecycle startup, falling back to static discovery: ${e.message}")
+            dynamicTools = org.moqui.ai.AdkMcpBridge.getTools()
+        }
+    } else {
+        logger.warn("⚠️ No active ExecutionContext available to call discovery service, falling back to static bridge.")
+        dynamicTools = org.moqui.ai.AdkMcpBridge.getTools()
+    }
+
+    // Combine custom AGI developer tools and Ean's screen-browsing/ERP tools
+    List<FunctionTool> allTools = [FunctionTool.create(AgiAITools.class, "get_artifact")]
+    allTools.addAll(dynamicTools)
+
+    logger.info("📡 [AGI-AI LIFECYCLE] Grafting ${allTools.size()} dynamic tools into the AGI Platform Kernel agent...")
+
     // Build unified high-performance LLM agent combining Google ADK tools with AGI developer tools
     def unifiedAgent = LlmAgent.builder()
         .name("agi-platform-kernel")
         .description("Unified AGI AI Agent Platform")
         .instruction(baseInstruction)
         .model(modelName)
-        .tools([
-            FunctionTool.create(AgiAITools.class, "get_artifact")
-        ])
+        .tools(allTools)
         .build()
 
     // Seed the ADK Manager with our unified agent and runner instance
@@ -60,6 +82,12 @@ Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of c
         unifiedAgent.instruction(),
         apiKey
     )
+
+    // Crucial Override: Directly assign the compiled agent and recreate the runner
+    // to preserve our active tools, since AdkManager.init() internally reconstructs
+    // the LlmAgent without transferring its tools array.
+    AdkManager.agent = unifiedAgent
+    AdkManager.runner = new com.google.adk.runner.InMemoryRunner(unifiedAgent, AdkManager.APP_NAME)
 
     logger.info("✨ [AGI-AI LIFECYCLE] Google ADK successfully bound to unified AGI developer tools (Model: ${modelName})!")
 } catch (Exception e) {

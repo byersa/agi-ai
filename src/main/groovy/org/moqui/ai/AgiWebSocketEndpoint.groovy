@@ -11,6 +11,9 @@ import jakarta.websocket.CloseReason
 import jakarta.websocket.EndpointConfig
 import jakarta.websocket.Session
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.UUID
 import org.moqui.adk.AdkManager
 
 @CompileStatic
@@ -20,9 +23,13 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
     // Store active WebSocket connections by channel
     private static final Map<String, Set<Session>> channels = new ConcurrentHashMap<>()
 
+    // Store active human-in-the-loop approval contexts
+    private static final Map<String, ApprovalContext> activeApprovals = new ConcurrentHashMap<>()
+
     AgiWebSocketEndpoint() { super() }
 
     static Map<String, Set<Session>> getChannels() { return channels }
+    static Map<String, ApprovalContext> getActiveApprovals() { return activeApprovals }
 
     @Override
     void onOpen(Session session, EndpointConfig config) {
@@ -99,21 +106,54 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
                     timestamp: System.currentTimeMillis()
                 ]
                 session.getBasicRemote().sendText(new JsonBuilder(pong).toString())
+            } else if (type == "approvalResponse") {
+                String token = (String) payload.token
+                boolean approved = (boolean) (payload.approved ?: false)
+                String rejectReason = (String) (payload.rejectReason ?: "Rejected by user")
+
+                logger.info("🛡️ [HITL SAFEGUARD] Received approval response for token: ${token}, approved: ${approved}")
+
+                ApprovalContext approval = activeApprovals.get(token)
+                if (approval) {
+                    approval.approved = approved
+                    approval.rejectReason = rejectReason
+                    approval.latch.countDown() // Release the blocked tool execution thread!
+                    
+                    // Reply down the socket to acknowledge receipt
+                    Map ack = [
+                        type: "notification",
+                        componentId: (String) (payload.componentId ?: channel),
+                        text: "Transaction ${approved ? 'approved' : 'rejected'}. Releasing agent..."
+                    ]
+                    session.getBasicRemote().sendText(new JsonBuilder(ack).toString())
+                } else {
+                    logger.warn("⚠️ [HITL SAFEGUARD] No active approval request found matching token: ${token}")
+                }
             } else if (type == "userMessage") {
                 String text = payload.text
                 String componentId = payload.componentId ?: channel
 
                 logger.info("🧠 [AGI-AI WS] Processing userMessage for component: ${componentId}")
 
-                // Run the Gemini conversation loop in an asynchronous worker thread to avoid blocking WebSocket connection threads
-                // Run the ADK Agent loop in an asynchronous worker thread to avoid blocking WebSocket connection threads
+                // Run the ADK Agent loop in an asynchronous worker thread to avoid blocking WebSocket threads
+                def ecf = getEcf()
                 Thread.start {
+                    // Initialize Thread-Isolated ExecutionContext
+                    def ec = ecf.getExecutionContext()
                     try {
                         String userId = "anonymous"
                         String sid = (String) (payload.sessionId ?: channel)
 
+                        // Bind active session and parameters to ExecutionContext to enable downstream tool interception
+                        ec.context.put("webSocketSession", session)
+                        ec.context.put("activeComponentId", componentId)
+                        ec.context.put("activeChannel", channel)
+
                         // Lazy init the ADK engine if needed
-                        AdkManager.lazyInit(getEcf())
+                        AdkManager.lazyInit(ecf)
+
+                        // Accumulation buffer for final text evaluation (commands checking)
+                        StringBuilder responseBuffer = new StringBuilder()
 
                         // Drive prompt asynchronously using official Google ADK dynamic runner
                         AdkManager.runAgentSse(userId, sid, text,
@@ -124,39 +164,18 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
                                     if (parts) {
                                         for (Object partObj : parts) {
                                             Map part = (Map) partObj
-                                            String responseText = (String) part.text
-                                            if (responseText) {
-                                                responseText = responseText.trim()
-
-                                                // If response is JSON command, dispatch as a canvas instruction
-                                                if (responseText.startsWith("{") && responseText.endsWith("}")) {
-                                                    try {
-                                                        def commandData = slurper.parseText(responseText)
-                                                        Map commandPayload = [
-                                                            type: "command",
-                                                            componentId: componentId,
-                                                            data: commandData
-                                                        ]
-                                                        session.getBasicRemote().sendText(new JsonBuilder(commandPayload).toString())
-                                                        logger.info("🎯 [AGI-AI WS] Dispatched dynamic visual command payload back to client on channel ${channel}")
-                                                    } catch (Exception ex) {
-                                                        Map reply = [
-                                                            type: "notification",
-                                                            componentId: componentId,
-                                                            text: responseText
-                                                        ]
-                                                        session.getBasicRemote().sendText(new JsonBuilder(reply).toString())
-                                                    }
-                                                } else {
-                                                    // Stream text notification chunk to chat canvas bubble
-                                                    Map reply = [
-                                                        type: "notification",
-                                                        componentId: componentId,
-                                                        text: responseText
-                                                    ]
-                                                    session.getBasicRemote().sendText(new JsonBuilder(reply).toString())
-                                                    logger.info("💬 [AGI-AI WS] Relayed streaming chat notification to client on channel ${channel}")
-                                                }
+                                            String chunkText = (String) part.text
+                                            if (chunkText) {
+                                                responseBuffer.append(chunkText)
+                                                
+                                                // Stream text token instantly for incremental chat UI rendering
+                                                Map tokenPayload = [
+                                                    type: "textToken",
+                                                    componentId: componentId,
+                                                    text: chunkText,
+                                                    partial: event.containsKey("partial") ? event.partial : true
+                                                ]
+                                                session.getBasicRemote().sendText(new JsonBuilder(tokenPayload).toString())
                                             }
                                         }
                                     }
@@ -164,7 +183,7 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
                             },
                             { Throwable err ->
                                 if (err) {
-                                    logger.error("Error executing ADK Agent prompt", err)
+                                    logger.error("❌ [AGI-AI WS] Error executing ADK Agent prompt", err)
                                     try {
                                         Map errorPayload = [
                                             type: "error",
@@ -173,11 +192,28 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
                                         ]
                                         session.getBasicRemote().sendText(new JsonBuilder(errorPayload).toString())
                                     } catch (Exception ex) {}
+                                } else {
+                                    // Successfully completed - check if full accumulated text represents a JSON command
+                                    String fullResponse = responseBuffer.toString().trim()
+                                    if (fullResponse.startsWith("{") && fullResponse.endsWith("}")) {
+                                        try {
+                                            def commandData = slurper.parseText(fullResponse)
+                                            Map commandPayload = [
+                                                type: "command",
+                                                componentId: componentId,
+                                                data: commandData
+                                            ]
+                                            session.getBasicRemote().sendText(new JsonBuilder(commandPayload).toString())
+                                            logger.info("🎯 [AGI-AI WS] Dispatched parsed JSON visual command back to client on channel ${channel}")
+                                        } catch (Exception ex) {
+                                            logger.warn("⚠️ Failed to parse accumulated text as JSON: ${ex.message}")
+                                        }
+                                    }
                                 }
                             }
                         )
                     } catch (Exception e) {
-                        logger.error("Error processing user message via ADK", e)
+                        logger.error("❌ [AGI-AI WS] Error processing user message via ADK", e)
                         try {
                             Map errorPayload = [
                                 type: "error",
@@ -186,6 +222,9 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
                             ]
                             session.getBasicRemote().sendText(new JsonBuilder(errorPayload).toString())
                         } catch (Exception ex) {}
+                    } finally {
+                        // Crucial: Clean up active thread context to prevent database / memory leaks
+                        ecf.destroyActiveExecutionContext()
                     }
                 }
             }
@@ -203,6 +242,63 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
         }
         logger.info("🛑 [AGI-AI WS] Client disconnected from channel: ${channel}. Reason: ${closeReason.getReasonPhrase()}")
         super.onClose(session, closeReason)
+    }
+
+    /**
+     * Blocks the active agent execution thread, dispatches an approval request payload
+     * down the WebSocket connection, and suspends execution until the user responds or times out.
+     */
+    static Map requestUserApproval(String toolName, Map arguments) {
+        org.moqui.context.ExecutionContext ec = org.moqui.impl.context.ExecutionContextFactoryImpl.getActiveExecutionContext()
+        if (!ec) {
+            logger.warn("⚠️ [HITL SAFEGUARD] No ExecutionContext found for approval of tool: ${toolName}. Proceeding without approval.")
+            return [approved: true]
+        }
+
+        Session session = (Session) ec.context.get("webSocketSession")
+        if (!session || !session.isOpen()) {
+            logger.warn("⚠️ [HITL SAFEGUARD] No active open WebSocket session found in context for approval of tool: ${toolName}. Proceeding without approval.")
+            return [approved: true]
+        }
+
+        String componentId = (String) ec.context.get("activeComponentId")
+        String token = UUID.randomUUID().toString()
+        logger.info("🛡️ [HITL SAFEGUARD] Requesting human approval for tool '${toolName}'. Token: ${token}")
+
+        ApprovalContext approval = new ApprovalContext(token, toolName, arguments)
+        activeApprovals.put(token, approval)
+
+        try {
+            Map requestPayload = [
+                type: "approvalRequest",
+                token: token,
+                componentId: componentId,
+                toolName: toolName,
+                arguments: arguments
+            ]
+            session.getBasicRemote().sendText(new JsonBuilder(requestPayload).toString())
+
+            // Block active execution thread for up to 5 minutes waiting for user input
+            boolean completed = approval.latch.await(5, TimeUnit.MINUTES)
+            if (!completed) {
+                logger.warn("⏳ [HITL SAFEGUARD] Tool approval request timed out. Token: ${token}")
+                activeApprovals.remove(token)
+                return [approved: false, error: "Transaction timed out (Human-in-the-loop protection)"]
+            }
+
+            activeApprovals.remove(token)
+            if (approval.approved) {
+                logger.info("✅ [HITL SAFEGUARD] Tool approval GRANTED. Token: ${token}")
+                return [approved: true]
+            } else {
+                logger.warn("❌ [HITL SAFEGUARD] Tool approval DENIED. Token: ${token}. Reason: ${approval.rejectReason}")
+                return [approved: false, error: approval.rejectReason ?: "Transaction rejected by user (Human-in-the-loop protection)"]
+            }
+        } catch (Exception e) {
+            logger.error("❌ [HITL SAFEGUARD] Error during human approval flow", e)
+            activeApprovals.remove(token)
+            return [approved: false, error: "System error during transaction approval check: " + e.getMessage()]
+        }
     }
 
     private static String getAuthToken(ExecutionContextFactoryImpl ecfi) {
@@ -228,5 +324,21 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
             }
         }
         return "816554a337e2d73431bd2903642f993b" // Dev fallback default
+    }
+}
+
+@CompileStatic
+class ApprovalContext {
+    final String token
+    final String toolName
+    final Map arguments
+    final CountDownLatch latch = new CountDownLatch(1)
+    volatile boolean approved = false
+    volatile String rejectReason = null
+
+    ApprovalContext(String token, String toolName, Map arguments) {
+        this.token = token
+        this.toolName = toolName
+        this.arguments = arguments
     }
 }
