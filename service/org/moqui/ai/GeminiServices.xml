@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
+
+    <service verb="send" noun="Prompt" type="inline">
+        <in-parameters>
+            <parameter name="promptText" required="true"/>
+            <parameter name="componentId" default-value="facility-alerts"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="responseText" required="true"/>
+        </out-parameters>
+        <actions>
+            <script location="component://agi-ai/service/org/moqui/ai/GeminiServices.groovy"/>
+        </actions>
+    </service>
+</services>
