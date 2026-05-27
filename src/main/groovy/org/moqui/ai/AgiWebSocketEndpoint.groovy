@@ -69,7 +69,12 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
         }
 
         // Register session in the channel
-        channels.computeIfAbsent(channel, { k -> ConcurrentHashMap.newKeySet() }).add(session)
+        Set<Session> set = channels.get(channel)
+        if (set == null) {
+            set = ConcurrentHashMap.newKeySet()
+            channels.put(channel, set)
+        }
+        set.add(session)
 
         // Send welcome message
         Map welcome = [
@@ -249,7 +254,7 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
      * down the WebSocket connection, and suspends execution until the user responds or times out.
      */
     static Map requestUserApproval(String toolName, Map arguments) {
-        org.moqui.context.ExecutionContext ec = org.moqui.impl.context.ExecutionContextFactoryImpl.getActiveExecutionContext()
+        org.moqui.context.ExecutionContext ec = org.moqui.Moqui.getExecutionContext()
         if (!ec) {
             logger.warn("⚠️ [HITL SAFEGUARD] No ExecutionContext found for approval of tool: ${toolName}. Proceeding without approval.")
             return [approved: true]

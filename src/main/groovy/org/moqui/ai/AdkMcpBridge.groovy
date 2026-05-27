@@ -17,7 +17,7 @@ class AdkMcpBridge {
     static List<FunctionTool> getTools() {
         logger.info("🌉 [ADK-MCP BRIDGE] Discovered tools from McpServices.list#Tools and registering FunctionTool bindings...")
         
-        ExecutionContext ec = ExecutionContextFactoryImpl.getActiveExecutionContext()
+        ExecutionContext ec = org.moqui.Moqui.getExecutionContext()
         if (ec) {
             try {
                 def res = ec.service.sync().name("McpServices.list#Tools").call()
@@ -66,7 +66,7 @@ class AdkMcpBridge {
      * Utility method to run the tools call backend execution of Ean's 'McpServices.mcp#ToolsCall'.
      */
     private static Map callMcpTool(String toolName, Map arguments) {
-        ExecutionContext ec = ExecutionContextFactoryImpl.getActiveExecutionContext()
+        ExecutionContext ec = org.moqui.Moqui.getExecutionContext()
         if (!ec) {
             logger.error("❌ No active ExecutionContext found for MCP tool call: ${toolName}")
             return [error: "No active ExecutionContext"]
@@ -121,7 +121,7 @@ class AdkMcpBridge {
 
         // Intercept and dispatch visual frame instantly down the active WebSocket connection
         try {
-            ExecutionContext ec = ExecutionContextFactoryImpl.getActiveExecutionContext()
+            ExecutionContext ec = org.moqui.Moqui.getExecutionContext()
             if (ec) {
                 def wsSessionObj = ec.context.get("webSocketSession")
                 if (wsSessionObj) {

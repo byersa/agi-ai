@@ -6,10 +6,28 @@
         <after-init name="AgiAdkLifecycleBinding" location="component://agi-ai/script/AgiAdkLifecycleBinding.groovy"/>
     </after-init-list>
 
+ <screen-facade>
+
+        <screen location="component://webroot/screen/webroot.xml">
+
+            <subscreens-item name="agi-ai" menu-title="AGI AI" menu-index="96"
+
+                             location="component://agi-ai/screen/agi-ai.xml"/>
+
+            <subscreens-item name="agi-ai-assets" menu-title="AGI AI Assets" menu-index="98"
+
+                             menu-include="false"
+
+                             location="component://agi-ai/screen/agi-ai/assets.xml"/>
+
+        </screen>
+
+    </screen-facade>
+
+
     <webapp-list>
         <webapp name="webroot">
             <endpoint path="/agi-ws/{channel}" class="org.moqui.ai.AgiWebSocketEndpoint" timeout="3600000" enabled="true"/>
         </webapp>
     </webapp-list>
-
 </moqui-conf>

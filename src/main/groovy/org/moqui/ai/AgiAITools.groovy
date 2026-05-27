@@ -17,7 +17,7 @@ class AgiAITools {
         logger.info("🛠️ [AGI-AI TOOLS] get_artifact invoked for component: ${targetComponent}, path: ${artifactPath}")
         
         try {
-            ExecutionContext ec = ExecutionContextFactory.getActiveExecutionContext()
+            ExecutionContext ec = org.moqui.Moqui.getExecutionContext()
             if (!ec) {
                 logger.warn("⚠️ No active execution context found inside get_artifact tool call.")
                 return [error: "No active execution context"]

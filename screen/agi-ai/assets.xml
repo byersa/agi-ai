@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        allow-extra-path="true" standalone="true">
+    <transition name="js" read-only="true" require-session-token="false">
+        <actions>
+            <script><![CDATA[
+                def path = sri.screenUrlInfo.extraPathNameList.join("/")
+                def resourceRef = ec.resource.getLocationReference("component://agi-ai/screen/agi-ai/assets/" + path)
+                if (resourceRef?.exists) {
+                    ec.web.sendResourceResponse(resourceRef.location)
+                }
+            ]]></script>
+        </actions>
+        <default-response type="none"/>
+    </transition>
+    <widgets/>
+</screen>

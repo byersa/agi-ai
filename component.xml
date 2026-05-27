@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
            xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/component-essential-4.0.xsd"
-           name="agi-ai">
-    <depends-on name="moqui-mcp"/>
-    <depends-on name="moqui-adk"/>
+           name="agi-ai" version="1.0.0">
+    <component-dependencies>
+        <depends-component name="moqui-mcp-2"/>
+        <depends-component name="moqui-adk"/>
+    </component-dependencies>
 </component>

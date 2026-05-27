@@ -43,7 +43,7 @@ Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of c
 """
 
     // Safely obtain active execution context
-    def ec = context.ec ?: org.moqui.impl.context.ExecutionContextFactoryImpl.getActiveExecutionContext()
+    def ec = context.ec ?: org.moqui.Moqui.getExecutionContext()
     List<FunctionTool> dynamicTools = []
     if (ec) {
         try {

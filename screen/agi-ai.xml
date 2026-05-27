@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-4.0.xsd"
+        require-authentication="false">
+
+    <always-actions>
+        <set field="webmcpToken" from="System.getenv('WEBMCP_SERVER_TOKEN') ?: 'fallback_local_dev_token'"/>
+        <set field="ts" from="System.currentTimeMillis()"/>
+        
+        <script location="component://agi-ai/script/AgiBackendBootstrapper.groovy"/>
+    </always-actions>
+
+    <widgets>
+        <subscreens-active/>
+    </widgets>
+</screen>

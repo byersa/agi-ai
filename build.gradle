@@ -1,0 +1,40 @@
+apply plugin: 'groovy'
+
+def componentNode = new groovy.xml.XmlParser().parse(file('component.xml'))
+version = componentNode.'@version'
+def jarBaseName = componentNode.'@name'
+def moquiDir = projectDir.parentFile.parentFile.parentFile
+def frameworkDir = file(moquiDir.absolutePath + '/framework')
+
+repositories {
+    flatDir name: 'localLib', dirs: frameworkDir.absolutePath + '/lib'
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly project(':framework')
+    compileOnly project(':runtime:component:moqui-adk')
+    compileOnly 'jakarta.servlet:jakarta.servlet-api:6.1.0'
+    compileOnly 'com.google.adk:google-adk:1.3.0'
+}
+
+jar {
+    destinationDirectory = file(projectDir.absolutePath + '/lib')
+    archiveBaseName = jarBaseName
+}
+
+// Ensure classes are compiled before the server starts
+classes.finalizedBy jar
+
+task cleanLib(type: Delete) { delete fileTree(dir: projectDir.absolutePath + '/lib', include: '*') }
+clean.dependsOn cleanLib
+task copyDependencies {
+    doLast {
+        copy {
+            from configurations.runtimeClasspath
+            into file(projectDir.absolutePath + '/lib')
+        }
+    }
+}
+copyDependencies.dependsOn cleanLib
+jar.dependsOn copyDependencies
