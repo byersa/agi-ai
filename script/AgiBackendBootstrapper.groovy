@@ -129,10 +129,16 @@ Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of c
         }
     }
 
+    // =========================================================================
+    // REMEDIATION: Dynamic Class Resolution for Static Tool Definitions
+    // =========================================================================
     // Combine custom AGI developer tools and Ean's screen-browsing/ERP tools
     def functionToolClass = Thread.currentThread().getContextClassLoader().loadClass("com.google.adk.tools.FunctionTool")
-    def allTools = [functionToolClass.create(AgiAITools.class, "get_artifact")]
+    def agiAiToolsClass = Thread.currentThread().getContextClassLoader().loadClass("org.moqui.ai.AgiAITools")
+  
+    def allTools = [functionToolClass.getMethod("create", Class.class, String.class).invoke(null, agiAiToolsClass, "get_artifact")]
     allTools.addAll(dynamicTools)
+    // =========================================================================
 
     logger.info("📡 [AGI-AI BOOTSTRAP] Grafting ${allTools.size()} dynamic tools into the AGI Platform Kernel agent...")
 
@@ -146,22 +152,62 @@ Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of c
         .tools(allTools)
         .build()
 
-    // Seed the ADK Manager with our unified agent and runner instance
+    // =========================================================================
+    // REMEDIATION: Type-Safe String Unwrapping for ADK Manager Initialization
+    // =========================================================================
+    
     def adkManagerClass = Thread.currentThread().getContextClassLoader().loadClass("org.moqui.adk.AdkManager")
-    adkManagerClass.init(
-        unifiedAgent.name(),
-        unifiedAgent.model(),
-        unifiedAgent.instruction(),
+
+    // 1. Extract the name as a string
+    String agentName = unifiedAgent.name()
+
+    // 2. Safely unwrap the Model Optional to get its underlying string name
+    var modelObj = unifiedAgent.model()
+    String finalModelName = modelObj instanceof Optional ? (modelObj.isPresent() ? modelObj.get().toString() : "gemini-1.5-pro") : modelObj.toString()
+
+    // 3. Extract the clean string text out of the Static Instruction wrapper
+    var instructionObj = unifiedAgent.instruction()
+    String finalInstructionText = instructionObj != null ? instructionObj.toString() : ""
+
+    logger.info("⚡ [AGI-AI BOOTSTRAP] Initializing AdkManager with extracted string signatures...")
+    
+    // 4. Invoke the method using the exact (String, String, String, String) signature it expects
+    adkManagerClass.getMethod("init", String.class, String.class, String.class, String.class).invoke(
+        null, // Static method target is null
+        agentName,
+        finalModelName,
+        finalInstructionText,
         apiKey
     )
+    // =========================================================================
 
-    // Crucial Override: Directly assign the compiled agent and recreate the runner
-    // to preserve our active tools, since AdkManager.init() internally reconstructs
-    // the LlmAgent without transferring its tools array.
-    adkManagerClass.agent = unifiedAgent
+    // Crucial Override: Reflectively set static fields to bypass Groovy meta-property collisions
+    // This forces our fully hydrated unifiedAgent (with tools attached) into the runtime container
+    def agentField = adkManagerClass.getDeclaredField("agent")
+    agentField.setAccessible(true)
+    agentField.set(null, unifiedAgent)
     
+    // Dynamically retrieve the application name variable string from the class context
+    def appNameField = adkManagerClass.getDeclaredField("APP_NAME")
+    appNameField.setAccessible(true)
+    String activeAppName = (String) appNameField.get(null)
+    
+    // Reconstruct the InMemoryRunner context securely using the runtime interface class mapping
     def runnerClass = Thread.currentThread().getContextClassLoader().loadClass("com.google.adk.runner.InMemoryRunner")
-    adkManagerClass.runner = runnerClass.getConstructor(llmAgentClass, String.class).newInstance(unifiedAgent, adkManagerClass.APP_NAME)
+    
+    // Find any 2-argument constructor on InMemoryRunner to avoid rigid class-type matching wars
+    def targetConstructor = runnerClass.getConstructors().find { it.getParameterCount() == 2 }
+    
+    if (!targetConstructor) {
+        throw new NoSuchMethodException("Could not locate a valid 2-argument constructor for InMemoryRunner.")
+    }
+    
+    // Force the arguments array into an explicit Object array to guarantee clean reflection binding
+    def newRunnerInstance = targetConstructor.newInstance([unifiedAgent, activeAppName] as Object[])
+    
+    def runnerField = adkManagerClass.getDeclaredField("runner")
+    runnerField.setAccessible(true)
+    runnerField.set(null, newRunnerInstance)
 
     logger.info("✨ [AGI-AI BOOTSTRAP] Google ADK successfully bound to unified AGI developer tools (Model: ${modelName})!")
     
