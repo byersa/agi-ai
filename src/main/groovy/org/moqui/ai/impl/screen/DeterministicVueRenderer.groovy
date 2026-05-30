@@ -27,6 +27,9 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
             isRoot = true
             currentChildren = []
             sri.ec.context.put("blueprintChildren", currentChildren)
+        } else if (currentChildren.isEmpty() && sri.ec.context.get("blueprintRenderDepth") == null) {
+            // If the collection is empty and our tracking variables aren't set yet, this IS the root call!
+            isRoot = true
         }
 
         boolean alreadyDisabled = sri.ec.artifactExecution.disableAuthz()
@@ -150,7 +153,7 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                 Map<String, Object> fqfAttrs = (Map<String, Object>) fqfMap.attributes
                 if (optionsUrl) {
                     fqfAttrs.type = "drop-down"
-                    fqfAttrs["options-url"] = sri.makeUrlByType(optionsUrl, "transition", node, "true").getPath()
+                    fqfAttrs["options-url"] = resolveTransitionUrl(sri, optionsUrl)
                     fqfAttrs["options-load-init"] = "true"
                     if (optionsParameters) {
                         try {
@@ -193,7 +196,6 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                 String urlType = node.attribute("url-type") ?: "transition"
                 Map<String, Object> ddAttrs = (Map<String, Object>) ddMap.attributes
                 if (trans) {
-                    org.moqui.impl.screen.ScreenUrlInfo.UrlInstance ui = sri.makeUrlByType(trans, urlType, node, "true")
                     // AMB 2026-03-11: Manually force parameter resolution to ensure they are in the URL
                     Map<String, String> params = [:]
                     node.children("parameter").each { MNode param ->
@@ -203,8 +205,7 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                         Object val = value ? sri.ec.resource.expand(value, "") : (from ? sri.ec.context.get(from) : null)
                         if (val != null) params.put(pName, val.toString())
                     }
-                    // Use getPath() for a relative URL and manually append params to be safe with moqui.loadComponent
-                    String url = ui.getPath()
+                    String url = resolveTransitionUrl(sri, trans)
                     if (params) {
                         url += "?" + params.collect { String k, String v -> "${k}=${URLEncoder.encode(v, 'UTF-8')}" }.join("&")
                     }
@@ -232,7 +233,7 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                 String urlType = node.attribute("url-type") ?: "transition"
                 String href = ""
                 if (url && urlType != "plain") {
-                    href = sri.makeUrlByType(url, urlType, node, "true").getPath()
+                    href = resolveTransitionUrl(sri, url)
                 } else if (url) {
                     href = url
                 }
@@ -427,7 +428,7 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                 String miTransition = node.attribute("transition") ?: node.attribute("url") ?: miName
                 String miUrlType = node.attribute("url-type") ?: "transition"
                 if (miTransition) {
-                    miAttributes.href = sri.makeUrlByType(miTransition, miUrlType, node, "true").getPath()
+                    miAttributes.href = resolveTransitionUrl(sri, miTransition)
                 }
                 if (miName) {
                     org.moqui.impl.screen.ScreenDefinition.SubscreensItem subItem = sri.getActiveScreenDef().getSubscreensItem(miName)
@@ -443,7 +444,7 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                 String mdTrans = node.attribute("transition")
                 String mdTargetUrlAttr = node.attribute("target-url") ?: mdName
                 if (mdTargetUrlAttr) {
-                    mdAttributes["target-url"] = sri.makeUrlByType(mdTargetUrlAttr, "transition", node, "true").getPath()
+                    mdAttributes["target-url"] = resolveTransitionUrl(sri, mdTargetUrlAttr)
                 }
                 if (mdName) {
                     org.moqui.impl.screen.ScreenDefinition.SubscreensItem subItem = sri.getActiveScreenDef().getSubscreensItem(mdName)
@@ -452,7 +453,7 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
                     }
                 }
                 if (mdTrans) {
-                    mdAttributes["transition-url"] = sri.makeUrlByType(mdTrans, "transition", node, "true").getPath()
+                    mdAttributes["transition-url"] = resolveTransitionUrl(sri, mdTrans)
                 }
                 children.add(["@type": "m-menu-dropdown", "attributes": mdAttributes])
                 break
@@ -503,14 +504,8 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
         String entityName = formNode.attribute("entity-name")
         if (entityName) sri.ec.context.put("currentEntityName", entityName)
 
-        String actionUrl = ""
         String transitionName = formNode.attribute("transition")
-        try {
-            actionUrl = sri.makeUrlByType(transitionName, "transition", formNode, "true").getPath()
-        } catch (Exception e) {
-            logger.warn("⚠️ Failed to resolve form single URL for transition '${transitionName}' on screen ${sri.getActiveScreenDef().getLocation()}: ${e.message}")
-            actionUrl = transitionName
-        }
+        String actionUrl = resolveTransitionUrl(sri, transitionName)
 
         try {
             Map<String, Object> formMap = [
@@ -798,5 +793,21 @@ class DeterministicVueRenderer implements ScreenWidgetRender {
             }
         }
         return attrs
+    }
+
+    protected String resolveTransitionUrl(ScreenRenderImpl sri, String transitionName) {
+        if (!transitionName) return ""
+        if (transitionName.startsWith("/")) return transitionName
+        String loc = sri.getActiveScreenDef().getLocation()
+        if (loc.startsWith("component://")) {
+            String base = loc.substring("component://".length())
+            int firstSlash = base.indexOf('/')
+            if (firstSlash != -1) {
+                String componentName = base.substring(0, firstSlash)
+                String screenPath = base.substring(firstSlash + 1)
+                return "/${componentName}/${screenPath.replace('.xml', '')}/${transitionName}"
+            }
+        }
+        return "/${transitionName}"
     }
 }

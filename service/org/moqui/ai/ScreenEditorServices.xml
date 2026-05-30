@@ -2,7 +2,7 @@
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-2.1.xsd">
 
-    <service verb="get" noun="Blueprint" transaction="force-new" transaction-timeout="300" >
+    <service verb="get" noun="Blueprint" transaction="force-new" transaction-timeout="300">
         <in-parameters>
             <parameter name="componentName" required="true"/>
             <parameter name="screenPath" required="true"/>
@@ -14,6 +14,10 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
+                // Inject the standard application context explicitly into the parameters map
+                ec.context.put("renderMode", "qjson")
+                
+                // Route the request straight into our high-fidelity service method
                 context.blueprint = org.moqui.ai.ScreenEditorServices.getBlueprint(componentName, screenPath, ec)
             ]]></script>
         </actions>

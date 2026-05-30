@@ -252,11 +252,13 @@ class ScreenEditorServices {
 
         StringWriter writer = new StringWriter()
         try {
-            // Programmatically execute the Moqui screen renderer facade in qjson mode
-            ec.screen.makeRender()
-                .rootScreen(screenLoc)
-                .renderMode("qjson")
-                .render(writer)
+            org.moqui.screen.ScreenRender renderBuilder = ec.screen.makeRender()
+            renderBuilder.rootScreen(screenLoc)
+            renderBuilder.renderMode("qjson")
+            
+            // Execute the live runtime walk cleanly
+            renderBuilder.render(writer)
+            
         } catch (Exception e) {
             logger.error("❌ Failed to dynamically render screen blueprint for: ${screenLoc}", e)
             throw new RuntimeException("Failed to render screen blueprint: " + e.getMessage(), e)
@@ -269,10 +271,12 @@ class ScreenEditorServices {
         }
 
         try {
+            // Parse the structured string buffer back into a map object
             Map<String, Object> blueprintMap = (Map<String, Object>) new groovy.json.JsonSlurper().parseText(jsonStr)
-            return [
-                blueprint: blueprintMap
-            ]
+            
+            // FIXED: Return the map directly. Moqui's service engine will map it to out-parameters.blueprint automatically!
+            return blueprintMap
+            
         } catch (Exception e) {
             logger.error("❌ Failed to parse blueprint JSON output: ${jsonStr}", e)
             throw new RuntimeException("Failed to parse blueprint JSON: " + e.getMessage(), e)
