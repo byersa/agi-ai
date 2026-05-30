@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rest-api xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/rest-api-3.xsd"
+          name="agi-ai" version="s1" require-csrf="false" require-authentication="false">
+    
+    <resource name="getBlueprint">
+        <method type="get" require-authentication="false">
+            <service name="org.moqui.ai.ScreenEditorServices.get#Blueprint"/>
+        </method>
+    </resource>
+
+    <resource name="saveBlueprint">
+        <method type="post" require-authentication="false">
+            <service name="org.moqui.ai.ScreenEditorServices.save#Blueprint"/>
+        </method>
+    </resource>
+
+    <resource name="registerClient">
+        <method type="get" require-authentication="false">
+            <service name="org.moqui.ai.ScreenEditorServices.register#Client"/>
+        </method>
+    </resource>
+
+    <resource name="getUiMacros">
+        <method type="get" require-authentication="false">
+            <service name="org.moqui.ai.ScreenEditorServices.get#UiMacros"/>
+        </method>
+    </resource>
+</rest-api>

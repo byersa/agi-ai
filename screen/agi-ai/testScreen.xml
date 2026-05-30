@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-4.0.xsd"
+        require-authentication="false">
+
+    <widgets>
+        <container id="root_container" style="q-pa-md row wrap justify-start items-stretch">
+            <form-single name="discussion_edit_form" style="col-12 q-gutter-md">
+                <field name="subject" title="Topic Subject">
+                    <text-line size="30" placeholder="Enter subject name..."/>
+                </field>
+                <field name="category" title="Category Selection">
+                    <drop-down>
+                        <option text="Development"/>
+                        <option text="Operations"/>
+                        <option text="Design"/>
+                        <option text="General"/>
+                    </drop-down>
+                </field>
+                <discussion-tree entity-name="agi.ai.Discussion" context-id="CAMP_EAST_2026" title="Camp Planning Thread" enable-replies="true"/>
+                <field name="submitBtn">
+                    <submit text="Save Changes"/>
+                </field>
+            </form-single>
+        </container>
+    </widgets>
+</screen>

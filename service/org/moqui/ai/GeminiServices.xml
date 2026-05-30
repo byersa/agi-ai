@@ -26,4 +26,89 @@
             ]]></script>
         </actions>
     </service>
+
+    <service verb="get" noun="ScreenCanvasTree">
+        <in-parameters>
+            <parameter name="screenLocation" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="canvasTree" type="Map"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                context.canvasTree = org.moqui.ai.ScreenEditorServices.getScreenCanvasTree(screenLocation, ec)
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="get" noun="Blueprint" authenticate="false">
+        <in-parameters>
+            <parameter name="componentName" required="true"/>
+            <parameter name="screenPath" required="true"/>
+            <parameter name="renderTargetOnly" type="String"/>
+            <parameter name="renderDepth" type="String"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="blueprint" type="Map"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                context.blueprint = org.moqui.ai.ScreenEditorServices.getBlueprint(componentName, screenPath, ec).blueprint
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="save" noun="Blueprint" authenticate="false">
+        <in-parameters>
+            <parameter name="componentName" required="true"/>
+            <parameter name="screenPath" required="true"/>
+            <parameter name="blueprint" type="Map" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="success" type="Boolean"/>
+            <parameter name="message" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def res = org.moqui.ai.ScreenEditorServices.saveBlueprint(componentName, screenPath, blueprint, ec)
+                context.success = res.success
+                context.message = res.message
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="register" noun="Client" authenticate="false">
+        <in-parameters>
+            <parameter name="componentName" required="true"/>
+            <parameter name="screenPath" required="true"/>
+        </in-parameters>
+        <actions>
+            <script><![CDATA[
+                org.moqui.ai.ScreenEditorServices.registerClient(componentName, screenPath, ec)
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="get" noun="UiMacros" authenticate="false">
+        <out-parameters>
+            <parameter name="macros" type="Map"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                context.macros = org.moqui.ai.ScreenEditorServices.getUiMacros(ec).macros
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="push" noun="BlueprintUpdate" authenticate="false">
+        <in-parameters>
+            <parameter name="componentName" required="true"/>
+            <parameter name="screenPath" required="true"/>
+        </in-parameters>
+        <actions>
+            <script><![CDATA[
+                org.moqui.ai.ScreenEditorServices.pushBlueprintUpdate(componentName, screenPath, ec)
+            ]]></script>
+        </actions>
+    </service>
 </services>

@@ -22,6 +22,10 @@
 
         </screen>
 
+        <!-- Use the DeterministicVueRenderer for qjson instead of default macro renderer -->
+        <screen-output type="qjson" mime-type="application/json" always-standalone="false"
+                       widget-render-class="org.moqui.ai.impl.screen.DeterministicVueRenderer"/>
+
     </screen-facade>
 
 

@@ -32,7 +32,6 @@ if (typeof window.WebMcpClient === 'undefined') {
             this.currentToken = '';
             this.currentServer = '';
             this.currentChannel = '';
-            this.elementId = 'webmcp-bridge-square';
             this.registeredTools = new Set();
             this.registeredPrompts = new Set();
             this.registeredResources = new Set();
@@ -59,11 +58,6 @@ if (typeof window.WebMcpClient === 'undefined') {
          * @private
          */
         _init() {
-            // Check if already initialized on this page by ID or attribute
-            if (document.getElementById('webmcp-bridge-square') || document.querySelector('[data-webmcp-widget]')) {
-                console.log('[WebMCP] Bridge already present in DOM, skipping re-init.');
-                return;
-            }
 
             // Create and inject the widget
             this._createWidget();
