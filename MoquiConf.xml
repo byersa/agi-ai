@@ -6,32 +6,30 @@
         <after-init name="AgiAdkLifecycleBinding" location="component://agi-ai/script/AgiAdkLifecycleBinding.groovy"/>
     </after-init-list>
 
- <screen-facade>
-
+    <screen-facade>
         <screen location="component://webroot/screen/webroot.xml">
-
             <subscreens-item name="agi-ai" menu-title="AGI AI" menu-index="96"
-
                              location="component://agi-ai/screen/agi-ai.xml"/>
-
             <subscreens-item name="agi-ai-assets" menu-title="AGI AI Assets" menu-index="98"
-
                              menu-include="false"
-
                              location="component://agi-ai/screen/agi-ai/assets.xml"/>
-
+            
+            <subscreens-item name="mcp" menu-include="false" 
+                             location="component://moqui-mcp-2/screen/McpTestScreen.xml"/>
+            <subscreens-item name="sse" menu-include="false" 
+                             location="component://moqui-mcp-2/screen/McpTestScreen.xml"/>
+            <subscreens-item name="message" menu-include="false" 
+                             location="component://moqui-mcp-2/screen/McpTestScreen.xml"/>
         </screen>
 
-        <!-- Use the DeterministicVueRenderer for qjson instead of default macro renderer -->
         <screen-output type="qjson" mime-type="application/json" always-standalone="false"
                        widget-render-class="org.moqui.ai.impl.screen.DeterministicVueRenderer"/>
-
     </screen-facade>
-
 
     <webapp-list>
         <webapp name="webroot">
             <endpoint path="/agi-ws/{channel}" class="org.moqui.ai.AgiWebSocketEndpoint" timeout="3600000" enabled="true"/>
         </webapp>
     </webapp-list>
+
 </moqui-conf>

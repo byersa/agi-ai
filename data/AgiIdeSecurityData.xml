@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entity-facade-xml type="seed">
+
+    <moqui.security.ArtifactGroup artifactGroupId="AGI_IDE_SCREENS" description="AGI IDE Screen Artifacts"/>
+
+    <moqui.security.ArtifactGroupMember artifactGroupId="AGI_IDE_SCREENS" 
+                                        artifactName="component://agi-ide/screen/.*" 
+                                        nameIsPattern="Y" 
+                                        artifactTypeEnumId="AT_XML_SCREEN" 
+                                        inheritAuthz="Y"/>
+
+    <moqui.security.ArtifactAuthz artifactAuthzId="AGI_IDE_SCREENS_ADMIN" 
+                                  artifactGroupId="AGI_IDE_SCREENS" 
+                                  userGroupId="ADMIN" 
+                                  authzTypeEnumId="AUTHZT_ALWAYS" 
+                                  authzActionEnumId="AUTHZA_ALL"/>
+
+</entity-facade-xml>

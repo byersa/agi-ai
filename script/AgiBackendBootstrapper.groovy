@@ -51,10 +51,8 @@ addUniqueScript("https://unpkg.com/konva@10/konva.js")
 // 3. Inject Core Utility Libraries and our Dynamic Universal WebMCP Client
 addUniqueScript("/libs/moment.js/moment-with-locales.min.js")
 addUniqueScript("/libs/jquery/jquery.min.js")
-addUniqueScript("/agi-ai-assets/webmcp.js?v=${ts}")
 
 long scriptTs = System.currentTimeMillis()
-addUniqueScript("/agi-ai-assets/webmcp.js?v=${scriptTs}")
 
 logger.info("⚡ [AGI-AI BOOTSTRAP] Bootstrapping advanced AGI platform kernel and tool registrations...")
 

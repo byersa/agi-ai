@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entity-facade-data type="setup">
+    <mantle.party.Party partyId="SystemSupport" partyTypeEnumId="PtyPerson"/>
+    <mantle.party.Person partyId="SystemSupport" firstName="System" lastName="Support"/>
+
+    <moqui.security.UserAccount userId="SystemSupport" 
+                                username="SystemSupport" 
+                                currentPassword="moqui" 
+                                hasLoggedOut="N" 
+                                disabled="N" 
+                                partyId="SystemSupport"/>
+
+    <moqui.security.UserGroupMember userGroupId="ADMIN" 
+                                    userId="SystemSupport" 
+                                    fromDate="${ec.user.nowTimestamp}"/>
+</entity-facade-data>
