@@ -62,7 +62,37 @@ Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of c
 
     // Combine custom AGI developer tools and Ean's screen-browsing/ERP tools
     List<FunctionTool> allTools = [FunctionTool.create(AgiAITools.class, "get_artifact")]
-    allTools.addAll(dynamicTools)
+
+    // Construct the stateless RestMcpToolset
+    String mcpApiKey = null
+    if (ec) {
+        String[] result = [null]
+        Thread t = new Thread({
+            def threadEc = ec.factory.getExecutionContext()
+            try {
+                threadEc.user.internalLoginUser('SystemSupport')
+                result[0] = threadEc.user.getLoginKey(8760f)  // 1-year expiry
+                logger.info("Generated MCP API key for SystemSupport (valid 1 year)")
+            } catch (Exception e) {
+                logger.warn("Could not generate MCP API key, falling back to Basic auth: ${e.message}")
+            } finally {
+                threadEc.destroy()
+            }
+        }, 'adk-mcpkey-gen')
+        t.start()
+        t.join(5000L)
+        mcpApiKey = result[0]
+    }
+
+    Map<String, String> headers = [:]
+    if (mcpApiKey) {
+        headers['api_key'] = mcpApiKey
+    } else {
+        headers['Authorization'] = 'Basic ' + 'SystemSupport:moqui'.bytes.encodeBase64().toString()
+    }
+
+    def mcpToolset = new org.moqui.ai.RestMcpToolset('http://localhost:8080/rest/s1/mcp/tools', headers)
+    allTools.add(mcpToolset)
 
     logger.info("📡 [AGI-AI LIFECYCLE] Grafting ${allTools.size()} dynamic tools into the AGI Platform Kernel agent...")
 
@@ -75,21 +105,22 @@ Use the 'get_artifact' tool to retrieve live XML blueprints or canvas files of c
         .tools(allTools)
         .build()
 
-    // Seed the ADK Manager with our unified agent and runner instance
-    AdkManager.init(
-        unifiedAgent.name(),
-        unifiedAgent.model(),
-        unifiedAgent.instruction(),
-        apiKey
-    )
+    // Initialize session service in AdkManager first if not already initialized
+    if (ec && AdkManager.sharedSessionService == null) {
+        AdkManager.initSessionService(ec.factory)
+    }
 
-    // Crucial Override: Directly assign the compiled agent and recreate the runner
-    // to preserve our active tools, since AdkManager.init() internally reconstructs
-    // the LlmAgent without transferring its tools array.
-    AdkManager.agent = unifiedAgent
-    AdkManager.runner = new com.google.adk.runner.InMemoryRunner(unifiedAgent, AdkManager.APP_NAME)
+    def unifiedRunner = com.google.adk.runner.Runner.builder()
+        .agent(unifiedAgent)
+        .appName(AdkManager.APP_NAME)
+        .sessionService(AdkManager.sharedSessionService ?: new com.google.adk.sessions.InMemorySessionService())
+        .build()
 
-    logger.info("✨ [AGI-AI LIFECYCLE] Google ADK successfully bound to unified AGI developer tools (Model: ${modelName})!")
+    // Directly assign the runner and agent to AdkManager registries
+    AdkManager.registry.put(AdkManager.DEFAULT_CONFIG, unifiedRunner)
+    AdkManager.agentRegistry.put(AdkManager.DEFAULT_CONFIG, unifiedAgent)
+
+    logger.info("✨ [AGI-AI LIFECYCLE] Google ADK successfully bound to unified AGI developer tools (Model: ${modelName}) and stateless RestMcpToolset!")
 } catch (Exception e) {
     logger.error("❌ [AGI-AI LIFECYCLE ERROR] Failed to bind custom tools to ADK", e)
 }

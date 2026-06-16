@@ -29,6 +29,12 @@
     <webapp-list>
         <webapp name="webroot">
             <endpoint path="/agi-ws/{channel}" class="org.moqui.ai.AgiWebSocketEndpoint" timeout="3600000" enabled="true"/>
+
+            <after-startup>
+                <actions>
+                    <script location="component://agi-ai/script/AgiAdkLifecycleBinding.groovy"/>
+                </actions>
+            </after-startup>
         </webapp>
     </webapp-list>
 
