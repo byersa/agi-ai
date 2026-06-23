@@ -22,7 +22,8 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
-                context.toolsList = org.moqui.ai.AdkMcpBridge.getTools()
+                def res = ec.service.sync().name("org.moqui.ai.AdkMcpBridge.load#DynamicTools").call()
+                context.toolsList = res.toolsList
             ]]></script>
         </actions>
     </service>

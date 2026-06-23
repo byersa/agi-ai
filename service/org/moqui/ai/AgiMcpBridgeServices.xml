@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
+
+<service verb="load" noun="DynamicTools" authenticate="anonymous-all">
+        <description>Programmatically discover services in package org.moqui.ide.mcp and return them as Google ADK-compatible FunctionTool definitions.</description>
+        <out-parameters>
+            <parameter name="toolsList" type="List"><description>List of FunctionTool instances</description></parameter>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def serviceFacade = ec.factory.serviceFacade
+                def knownServices = serviceFacade.getKnownServiceNames()
+                def matchingServices = []
+                for (name in knownServices) {
+                    if (name.startsWith("org.moqui.ai.mcp.")) {
+                        matchingServices.add(name)
+                    }
+                }
+
+                StringBuilder sb = new StringBuilder()
+                sb.append("package org.moqui.ai\n\n")
+                sb.append("import com.google.adk.tools.Annotations.Schema\n\n")
+                sb.append("class DynamicMcpTools {\n")
+
+                def methodServiceMap = [:]
+                matchingServices.each { serviceName ->
+                    def sd = serviceFacade.getServiceDefinition(serviceName)
+                    if (sd != null) {
+                        // 🎯 FIX: Extract a clean, short method name (e.g., "add_formfield") 
+                        // so the method name matches what we want Gemini to see as the tool name
+                        def parts = serviceName.split("\\.")
+                        def cleanMethodName = parts[parts.length - 1].replace("#", "_").toLowerCase()
+                        
+                        methodServiceMap[cleanMethodName] = serviceName
+                        
+                        def description = sd.serviceNode.attribute("description") ?: sd.serviceNode.first("description")?.getText() ?: "MCP tool for ${serviceName}"
+                        def cleanDesc = description.replace('"', '\\"').replace('\n', ' ')
+                        
+                        sb.append("    @Schema(description = \"${cleanDesc}\")\n")
+                        sb.append("    public Map ${cleanMethodName}(\n")
+                        
+                        def inParams = sd.inParameterNameList
+                        def paramListStr = []
+                        inParams.each { paramName ->
+                            def paramInfo = sd.inParameterInfoMap.get(paramName)
+                            def paramDesc = paramInfo.parameterNode.attribute("description") ?: paramInfo.parameterNode.first("description")?.getText() ?: paramName
+                            def paramType = "String"
+                            if (paramInfo.parmClass != null) {
+                                paramType = paramInfo.parmClass.simpleName
+                            }
+                            
+                            def cleanParamDesc = paramDesc.replace('"', '\\"').replace('\n', ' ')
+                            paramListStr.add("        @Schema(name = \"${paramName}\", description = \"${cleanParamDesc}\") ${paramType} ${paramName}")
+                        }
+                        sb.append(paramListStr.join(",\n"))
+                        sb.append("\n    ) {\n")
+                        
+                        sb.append("        def args = [:]\n")
+                        inParams.each { paramName ->
+                            sb.append("        if (${paramName} != null) args.${paramName} = ${paramName}\n")
+                        }
+                        sb.append("        return org.moqui.Moqui.getExecutionContext().service.sync().name(\"${serviceName}\").parameters(args).call()\n")
+                        sb.append("    }\n\n")
+                    }
+                }
+                sb.append("}\n")
+
+                ec.logger.info("In load#DynamicTools, sb: " + sb.toString())
+
+                ClassLoader parentClassLoader = Thread.currentThread().getContextClassLoader()
+                GroovyClassLoader gcl = new GroovyClassLoader(parentClassLoader)
+                Class<?> clazz = gcl.parseClass(sb.toString())
+                def instance = clazz.getDeclaredConstructor().newInstance()
+
+                def toolsList = []
+                methodServiceMap.keySet().each { cleanMethodName ->
+                    try {
+                        // 🎯 FIX: Reverted to the correct two-parameter factory method signature supported by the ADK
+                        def tool = com.google.adk.tools.FunctionTool.create(instance, cleanMethodName)
+                        toolsList.add(tool)
+                    } catch (Exception e) {
+                        ec.logger.error("Failed to register dynamic tool ${cleanMethodName}: " + e.getMessage(), e)
+                    }
+                }
+                context.toolsList = toolsList
+            ]]></script>
+        </actions>
+    </service>
+
+<service verb="list" noun="Tools">
+        <description>Queries the live LlmAgent registry to serve the absolute source of truth for all active tools.</description>
+        <out-parameters>
+            <parameter name="tools" type="List"><description>List of formatted tool definitions for MCP compliance</description></parameter>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.adk.AdkManager
+
+                def toolsList = []
+                
+                // Pull the active LlmAgent directly out of the ADK Manager registry
+                def activeAgent = AdkManager.agentRegistry.get(AdkManager.DEFAULT_CONFIG)
+
+                if (activeAgent != null) {
+                    // 1. Unpack all explicit FunctionTools (built-ins + our dynamic services)
+                    if (activeAgent.tools()) {
+                        activeAgent.tools().each { tool ->
+                            toolsList.add([
+                                name: tool.getName(),
+                                title: tool.getName().replace("_", " ").capitalize(),
+                                description: tool.getDescription(),
+                                inputSchema: tool.getInputSchema()
+                            ])
+                        }
+                    }
+                    
+                    // 2. Unpack any bundled Toolsets (like the screen-browsing set)
+                    if (activeAgent.toolsets()) {
+                        activeAgent.toolsets().each { toolset ->
+                            if (toolset.getTools()) {
+                                toolset.getTools().each { subTool ->
+                                    toolsList.add([
+                                        name: subTool.getName(),
+                                        title: subTool.getName().replace("_", " ").capitalize(),
+                                        description: subTool.getDescription(),
+                                        inputSchema: subTool.getInputSchema()
+                                    ])
+                                }
+                            }
+                        }
+                    }
+                }
+
+                context.tools = toolsList
+            ]]></script>
+        </actions>
+    </service>
+</services>

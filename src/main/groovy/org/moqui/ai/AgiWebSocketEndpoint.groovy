@@ -15,9 +15,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.UUID
 import org.moqui.adk.AdkManager
+// 🎯 NEW: Core notification imports
+import org.moqui.context.NotificationMessage
+import org.moqui.context.NotificationMessageListener
 
 @CompileStatic
-class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
+class AgiWebSocketEndpoint extends MoquiAbstractEndpoint implements NotificationMessageListener {
     private final static Logger logger = LoggerFactory.getLogger(AgiWebSocketEndpoint.class)
 
     // Store active WebSocket connections by channel
@@ -25,6 +28,9 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
 
     // Store active human-in-the-loop approval contexts
     private static final Map<String, ApprovalContext> activeApprovals = new ConcurrentHashMap<>()
+    
+    // 🎯 NEW: Dynamic bus tracking state flag
+    private static boolean isRegistered = false
 
     AgiWebSocketEndpoint() { super() }
 
@@ -76,6 +82,13 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
         }
         set.add(session)
 
+        // 🎯 NEW: Safely bind this endpoint instance to the Moqui Core notification bus on first connection
+        if (!isRegistered) {
+            getEcf().registerNotificationMessageListener(this)
+            isRegistered = true
+            logger.info("📡 [WS REGISTER] AgiWebSocketEndpoint bound to Moqui Notification Message Bus.")
+        }
+
         // Send welcome message
         Map welcome = [
             type: "welcome",
@@ -84,6 +97,38 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
         ]
         session.getBasicRemote().sendText(new JsonBuilder(welcome).toString())
         logger.info("🟢 [AGI-AI WS] Client successfully registered and welcomed on channel: ${channel}")
+    }
+
+    // 🎯 NEW: Intercepts core framework messages and pipes them directly out to the browser canvas
+    @Override
+    void onMessage(NotificationMessage nm) {
+        String topic = nm.getTopic()
+        // Use property-style access or cast to extract the inner message string safely
+        // Extract the exact text JSON string packet natively managed by the message envelope
+        String payload = nm.getMessageJson()
+
+        // Match the message topic to your browser canvas channel
+        String targetChannel = topic == "agi-ide-canvas" ? "global_canvas" : topic
+        
+        Set<Session> sessions = channels.get(targetChannel)
+        if (sessions && !sessions.isEmpty()) {
+            logger.info("📤 [WS ROUTING] Routing topic '${topic}' broadcast to ${sessions.size()} active web canvas sessions")
+            for (Session session : sessions) {
+                if (session.isOpen()) {
+                    session.getBasicRemote().sendText(payload)
+                }
+            }
+        }
+    }
+
+    @Override
+    void init(org.moqui.context.ExecutionContextFactory ecf) {
+        // Lifecycle initialization stub - not strictly required for local stateless operations
+    }
+
+    @Override
+    void destroy() {
+        // Lifecycle teardown stub
     }
 
     @Override
@@ -310,7 +355,6 @@ class AgiWebSocketEndpoint extends MoquiAbstractEndpoint {
         String token = System.getenv("WEBMCP_SERVER_TOKEN") ?: System.getProperty("WEBMCP_SERVER_TOKEN")
         if (token) return token
         
-        // Fallback: check .env files in runtime directory or parent
         List<File> envFiles = [
             new File(ecfi.getRuntimePath(), ".env"),
             new File(ecfi.getRuntimePath(), "../.env")

@@ -7,7 +7,7 @@
     <!-- 🎯 require-authentication="anonymous-all" completely bypasses the Artifact Authz check for all nested child routes -->
     <resource name="tools">
         <method type="get">
-            <service name="McpServices.list#Tools"/>
+            <service name="org.moqui.ai.AgiMcpBridgeServices.list#Tools"/>
         </method>
         <method type="post">
             <service name="McpServices.mcp#ToolsCall"/>
