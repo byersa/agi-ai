@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <resource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/rest-api-3.xsd"
-          name="mcp" displayName="Moqui MCP REST API" version="1.0"
+          name="agi-ai" displayName="Moqui MCP REST API" version="1.0"
           require-authentication="anonymous-all">
           
     <!-- 🎯 require-authentication="anonymous-all" completely bypasses the Artifact Authz check for all nested child routes -->
@@ -11,6 +11,25 @@
         </method>
         <method type="post">
             <service name="McpServices.mcp#ToolsCall"/>
+        </method>
+    </resource>
+
+    <resource name="getWorkspaceBuffer">
+        <method type="get">
+            <service name="org.moqui.ai.AgiWorkspaceServices.get#WorkspaceBuffer"/>
+            <param name="artifactUri" type="String" required="true"/>
+            <param name="userId" type="String"/>
+        </method>
+    </resource>
+    <resource name="storeWorkspaceBuffer">
+        <method type="post">
+            <service name="org.moqui.ai.AgiWorkspaceServices.store#WorkspaceBuffer"/>
+        </method>
+    </resource>
+    <resource name="compileTreeToXml" require-authentication="anonymous-all" >
+        <method type="post" >
+            <service name="org.moqui.ai.AgiWorkspaceServices.compile#TreeToXml"/>
+            <param name="layoutTree" type="Map" required="false"/>
         </method>
     </resource>
 </resource>

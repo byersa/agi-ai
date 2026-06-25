@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+<service verb="get" noun="WorkspaceBuffer" type="inline">
+        <description>
+            Retrieves an active Meta-JSON layout buffer for a given artifact path.
+            If no buffer exists, or if a corrupted error state is cached, it forces a fresh compilation pass.
+        </description>
+        <in-parameters>
+            <parameter name="artifactUri" type="String" required="true"/>
+            <parameter name="userId" type="String"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="metaJsonBuffer" type="String"/>
+            <parameter name="workspaceBufferId" type="String"/>
+        </out-parameters>
+        <actions>
+
+            <log message="In get#WorkspaceBuffer, artifactUri: ${artifactUri}" />
+            <log message="In get#WorkspaceBuffer, userId: ${userId}" />
+            <entity-find entity-name="org.moqui.ai.WorkspaceBuffer" list="bufferList">
+                <econdition field-name="artifactUri" from="artifactUri"/>
+            </entity-find>
+            <log message="In get#WorkspaceBuffer, bufferList: ${bufferList}" />
+
+            <script><![CDATA[
+                hasValidCache = false
+                if (bufferList) {
+                    def cachedRow = bufferList[0]
+                    ec.logger.info("cachedRow: " + cachedRow)
+                    if (cachedRow.metaJsonBuffer != null && !cachedRow.metaJsonBuffer.contains('"error"')) {
+                        hasValidCache = true
+                        metaJsonBuffer = cachedRow.metaJsonBuffer
+                        workspaceBufferId = cachedRow.workspaceBufferId
+                    } else {
+                        // Safely clear out the poison pill via inline execution facade context
+                        ec.service.sync().name("delete#org.moqui.ai.WorkspaceBuffer")
+                            .parameter("workspaceBufferId", cachedRow.workspaceBufferId).call()
+                    }
+                }
+            ]]></script>
+            
+            <if condition="hasValidCache">
+                <then>
+                    </then>
+                <else>
+                    <service-call name="org.moqui.ide.AgiMcpServices.get#FormMetadata" 
+                      in-map="[screenPath: artifactUri]" 
+                      out-map="metaResult"/>
+        
+                    <log message="In get#WorkspaceBuffer, metaResult: ${metaResult}" />
+                    <set field="rawJsonText" from="metaResult.metadataJson"/>
+                    
+                    <script><![CDATA[
+                        if (rawJsonText) {
+                            // Stitch missing sibling object commas: \}\s*\{ -> },{
+                            rawJsonText = rawJsonText.trim().replaceAll("\\}\\s*\\{", "},{");
+                            
+                            // Map json-ld "@type" tokens to standard flat "type" keys
+                            rawJsonText = rawJsonText.replaceAll("\"@type\"", "\"type\"");
+                        } else {
+                            rawJsonText = "{ \"id\": \"root\", \"tagName\": \"form\", \"children\": [] }";
+                        }
+                        
+                        // Explicit boolean marker calculation isolated from XML parsing constraints
+                        shouldSaveToDb = !rawJsonText.contains('"error"')
+                    ]]></script>
+                    <log message="In get#WorkspaceBuffer, shouldSaveToDB: ${shouldSaveToDB}" />
+                    <log message="In get#WorkspaceBuffer, metaResult(2): ${metaResult}" />
+            
+                    <if condition="shouldSaveToDb">
+                        <then>
+                            <service-call name="create#org.moqui.ai.WorkspaceBuffer" out-map="createResult"
+                                          in-map="[
+                                              artifactUri: artifactUri, 
+                                              userId: userId ?: ec.user.userId ?: 'system_ide_user', 
+                                              metaJsonBuffer: rawJsonText, 
+                                              lastUpdatedStamp: ec.user.nowTimestamp
+                                          ]"/>
+                            <set field="workspaceBufferId" from="createResult.workspaceBufferId"/>
+                        </then>
+                    </if>
+                    
+                    <set field="metaJsonBuffer" from="rawJsonText"/>
+                </else>
+            </if>
+        </actions>
+    </service>
+
+    <service verb="store" noun="WorkspaceBuffer" type="inline">
+        <description>
+            Updates the stateful layout tree buffer string. 
+            Because enable-audit-log is active on the underlying entity, this automatically triggers a version checkpoint.
+        </description>
+        <in-parameters>
+            <parameter name="workspaceBufferId" type="String" required="true"/>
+            <parameter name="metaJsonBuffer" type="String" required="true"/>
+        </in-parameters>
+        <actions>
+            <service-call name="update#org.moqui.ai.WorkspaceBuffer"
+                          in-map="[workspaceBufferId: workspaceBufferId, metaJsonBuffer: metaJsonBuffer, lastUpdatedStamp: ec.user.nowTimestamp]"/>
+        </actions>
+    </service>
+
+<service verb="compile" noun="TreeToXml" type="inline">
+        <in-parameters>
+            <parameter name="layoutTree" type="Map" required="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="xmlText" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def buildXmlNode(Map nodeMap) {
+                    String tagName = nodeMap.tagName ?: "container"
+                    StringBuilder sb = new StringBuilder("<${tagName}")
+                    
+                    // Inject properties as valid XML attributes
+                    nodeMap.each { k, v ->
+                        if (k != 'children' && k != 'tagName' && k != 'id' && v != null) {
+                            sb.append(" ${k}=\"${v}\"")
+                        }
+                    }
+                    
+                    if (nodeMap.children) {
+                        sb.append(">\n")
+                        nodeMap.children.each { child ->
+                            sb.append(buildXmlNode(child as Map))
+                        }
+                        sb.append("</${tagName}>\n")
+                    } else {
+                        sb.append("/>\n")
+                    }
+                    return sb.toString()
+                }
+                
+                // Wrap your dynamic layout elements in the standard screen envelope structure
+                String rawTreeText = buildXmlNode(layoutTree)
+                xmlText = """<?xml version="1.0" encoding="UTF-8"?>
+                           <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+                               <widgets>
+                                   ${rawTreeText}
+                               </widgets>
+                           </screen>"""
+            ]]></script>
+        </actions>
+    </service>
+</services>

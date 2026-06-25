@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-3.xsd">
+
+    <entity entity-name="WorkspaceBuffer" package="org.moqui.ai" enable-audit-log="true">
+        <description>Stores stateful, transient Meta-JSON layout trees and workspace contexts for active editing sessions.</description>
+        
+        <field name="workspaceBufferId" type="id" is-pk="true"/>
+        
+        <field name="userId" type="id"/>
+        <field name="artifactUri" type="text-medium"/>
+        <field name="artifactType" type="id"/>
+        <field name="localeCode" type="id"/>
+        <field name="isLocked" type="text-indicator"/>
+        
+        <field name="metaJsonBuffer" type="text-long" encrypt="false"/>
+
+        <master>
+            <detail relationship="userAccount"/>
+        </master>
+        
+        <relationship type="one" title="User" relation-name="userAccount" related="moqui.security.UserAccount">
+            <key-map field-name="userId"/>
+        </relationship>
+    </entity>
+
+</entities>
