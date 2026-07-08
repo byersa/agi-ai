@@ -43,7 +43,7 @@
             
             <if condition="hasValidCache">
                 <then>
-                    </then>
+                </then>
                 <else>
                     <service-call name="org.moqui.ide.AgiMcpServices.get#FormMetadata" 
                       in-map="[screenPath: artifactUri]" 
