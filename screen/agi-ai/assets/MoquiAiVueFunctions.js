@@ -1,6 +1,6 @@
 // Ensure our core global namespace layers are initialized safely
 window.moqui = window.moqui || {};
-window.AgiVueAppFunctionList = Object.assign(window.AgiVueAppFunctionList || {}, {
+window.AgiVueAppFunctionMap = Object.assign(window.AgiVueAppFunctionList || {}, {
 
     sendMessage(...args) {
         const m = window.moqui?.rootSetup?.()?.methods?.sendMessage;
