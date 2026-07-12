@@ -204,19 +204,34 @@
             // Unify Moqui layout arrays across child and parent contexts seamlessly
             const childNodes = activeNode.children || activeNode.widgets || [];
 
-            const componentDefinition = window.AgiComponents[type] || type;
+            console.log("In m-blueprint-node, type: " + type);
+            let componentDefinition = window.AgiComponents[type];
+            if (!componentDefinition) {
+                if (type.startsWith('q-') || type === 'div' || type === 'span') {
+                    componentDefinition = type;
+                } else {
+                    // Fallback to searching Vue's application context natively
+                    componentDefinition = Vue.resolveComponent(type) || type;
+                }
+            }
+            console.log("In m-blueprint-node, componentDefinition : " + JSON.stringify(componentDefinition));
 
             const childrenRenderMap = childNodes.map(child => {
-                return Vue.h(window.AgiComponents['m-blueprint-node'], {
+                let hChildren = Vue.h(window.AgiComponents['m-blueprint-node'], {
                     node: child,
                     context: this.context
                 });
+                return hChildren;
             });
 
-            return Vue.h(componentDefinition, properties, {
+            const h1 = Vue.h(componentDefinition, properties, {
                 default: () => childrenRenderMap
             });
-        }
+            return h1;
+        },
+        mounted() {
+            console.log("m-blueprint-node mounted");
+        },
     };
 
     window.AgiComponents['ComponentFactory'] = {

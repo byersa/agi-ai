@@ -1420,7 +1420,11 @@ window.AgiComponents['m-subscreens-active'] = {
         while (p) { if (p.activePathIndex !== undefined) { depth = p.activePathIndex; break; } p = p.$parent; }
         this.activePathIndex = (this.pathIndex !== -1 && this.pathIndex !== undefined) ? parseInt(this.pathIndex) : depth + 1;
     },
-    mounted() { if (this.$root && typeof this.$root.addSubscreen === 'function') this.$root.addSubscreen(this); },
+    mounted() {
+        if (this.$root && typeof this.$root.addSubscreen === 'function') {
+            this.$root.addSubscreen(this);
+        }
+    },
     unmounted() { if (this.$root && typeof this.$root.removeSubscreen === 'function') this.$root.removeSubscreen(this); },
     template: '<component :is="activeComponent" style="height:100%;width:100%;"></component>'
 };

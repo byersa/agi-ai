@@ -207,6 +207,7 @@ window.AgiVueAppFunctionMap = Object.assign(window.AgiVueAppFunctionList || {}, 
             console.log(`addSubscreen triggering loadActive for index ${pathIdx} path: ${this.currentPathList[pathIdx]}`);
             saComp.loadActive();
         }
+        return;
     },
 
     removeSubscreen: function (saComp) {
