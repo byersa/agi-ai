@@ -1380,9 +1380,20 @@ window.AgiComponents['m-subscreens-active'] = {
             var pathIndex = vm.activePathIndex; var curPathList = root.currentPathList; var newPath = curPathList[pathIndex];
 
             let parent = vm.$parent;
-            while (parent) { if (parent.pathName === newPath) { this.activeComponent = Vue.markRaw(moqui.EmptyComponent); return true; } parent = parent.$parent; }
-            if (pathIndex === 0 && (!newPath || newPath === "")) { this.activeComponent = Vue.markRaw(moqui.EmptyComponent); return true; }
-            if (pathIndex > 0 && (!newPath || pathIndex >= curPathList.length)) { this.activeComponent = Vue.markRaw(moqui.EmptyComponent); return true; }
+            while (parent) {
+                if (parent.pathName === newPath) {
+                    this.activeComponent = Vue.markRaw(moqui.EmptyComponent); return true;
+                }
+                parent = parent.$parent;
+            }
+            if (pathIndex === 0 && (!newPath || newPath === "")) {
+                this.activeComponent = Vue.markRaw(moqui.EmptyComponent);
+                return true;
+            }
+            if (pathIndex > 0 && (!newPath || pathIndex >= curPathList.length)) {
+                this.activeComponent = Vue.markRaw(moqui.EmptyComponent);
+                return true;
+            }
 
             var fullPath = root.basePath + '/' + curPathList.slice(0, pathIndex + 1).join('/');
             if (this.itemName) {

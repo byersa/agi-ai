@@ -31,54 +31,136 @@
     };
 
     // 🎯 THE MISSING LINK: The primary asynchronous asset downloading factory
-    moqui.loadComponent = function (urlInfo, callback, containerId) {
-        var url = typeof urlInfo === 'string' ? urlInfo : urlInfo.path;
-
-        var queryParams = {};
-        if (typeof urlInfo === 'object') {
-            if (urlInfo.lastStandalone !== undefined) queryParams.lastStandalone = urlInfo.lastStandalone;
-            if (urlInfo.extraPath) url += '/' + urlInfo.extraPath;
-
-            // 🎯 TARGETED DISPATCH: This flag trips your MoquiConf.xml interceptor instantly!
-            queryParams.renderMode = 'qmeta';
-
-            if (urlInfo.search) {
-                var searchParts = urlInfo.search.split('&');
-                searchParts.forEach(function (p) {
-                    var pair = p.split('=');
-                    if (pair[0]) queryParams[pair[0]] = pair[1] || '';
-                });
-            }
+    moqui.loadComponent = function (urlInfo, callback) {
+        // 1. Build the target URL path
+        var url = urlInfo.path;
+        if (urlInfo.extraPath) {
+            if (!url.endsWith('/') && !urlInfo.extraPath.startsWith('/')) url += '/';
+            url += urlInfo.extraPath;
         }
 
-        var queryString = moqui.objToSearch(queryParams);
-        if (queryString.length > 0) {
-            url += (url.indexOf('?') > 0 ? '&' : '?') + queryString;
+        // 2. Append query search parameters
+        var search = urlInfo.search || "";
+        if (search) {
+            if (search.charAt(0) !== '?') search = '?' + search;
+            url += search;
         }
 
-        var finalUrl = window.moqui?.webrootVue?.getLinkPath?.(url) || url;
+        // 3. Append lastStandalone marker if provided (crucial for Moqui layout compilation)
+        if (urlInfo.lastStandalone) {
+            var separator = url.indexOf('?') !== -1 ? '&' : '?';
+            url += separator + "lastStandalone=" + urlInfo.lastStandalone;
+        }
 
-        return $.ajax({
-            type: "GET",
-            url: finalUrl,
-            dataType: "text",
+        var reqData = urlInfo.bodyParameters || null;
+        var httpMethod = reqData ? "POST" : "GET";
+
+        // 4. Fire standard AJAX request to retrieve the target subscreen
+        $.ajax({
+            type: httpMethod,
+            url: url,
+            data: reqData,
+            // Accept HTML/JSON and inject CSRF security token into headers
             headers: {
-                'Accept': 'application/json', // Signal programmatic consumption
-                'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || ""
+                "Accept": "text/html, application/json",
+                "X-CSRF-Token": window.AGI_SERVER_CSRF_TOKEN || ""
             },
             error: function (jqXHR, textStatus, errorThrown) {
-                moqui.handleAjaxError(jqXHR, textStatus, errorThrown);
+                console.error("❌ [Moqui] Failed to load subscreen component from: " + url, errorThrown);
+                callback(Vue.markRaw(moqui.EmptyComponent));
             },
-            success: function (componentText) {
-                // Vue parses and compiles your clean layout nodes here
-                try {
-                    var componentOptions = { template: componentText };
-                    callback(Vue.defineComponent(componentOptions));
-                } catch (err) {
-                    console.error("Layout compile exception:", err);
-                }
+            success: function (responseText) {
+                handleResponse(responseText);
             }
         });
+
+        // 5. Callback handler that dynamically routes JSON layouts vs standard HTML templates
+        const handleResponse = function (responseText) {
+            if (!responseText) {
+                callback(Vue.markRaw(moqui.EmptyComponent));
+                return;
+            }
+
+            // A. Check if the response is JSON (or wrapped in optional whitespace)
+            const trimmed = responseText.trim();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                try {
+                    const parsedMetaJson = JSON.parse(trimmed);
+
+                    // Wrap the parsed JSON layout directly inside our Blueprint Compiler hook
+                    const metaBlueprintComponent = {
+                        name: 'DynamicMetaSubscreen',
+                        data() {
+                            return {
+                                subscreenTree: parsedMetaJson.widgets || parsedMetaJson
+                            };
+                        },
+                        // We render a pure virtual node calling our blueprint system, skipping HTML string compiling!
+                        render() {
+                            const blueprintComp = window.AgiComponents['m-blueprint-node'];
+                            if (!blueprintComp) {
+                                console.error("❌ Blueprint Compiler ('m-blueprint-node') is not initialized.");
+                                return null;
+                            }
+                            return Vue.h(blueprintComp, {
+                                node: this.subscreenTree,
+                                context: this.$parent?.context || {}
+                            });
+                        }
+                    };
+
+                    // Hand a clean, functional layout component back to the caller
+                    callback(Vue.markRaw(metaBlueprintComponent));
+                    return;
+
+                } catch (jsonErr) {
+                    console.error("⚠️ Failed parsing response as Meta-JSON layout. Falling back to native loader.", jsonErr);
+                }
+            }
+
+            // B. LEGACY FALLBACK: Treat it as standard Moqui Vue HTML/JS template component text
+            try {
+                // Parse out embedded script elements cleanly from legacy HTML/Vue responses
+                var scriptText = "";
+                var tempDiv = document.createElement('div');
+                tempDiv.innerHTML = responseText;
+
+                var scripts = tempDiv.getElementsByTagName('script');
+                for (var i = 0; i < scripts.length; i++) {
+                    scriptText += scripts[i].innerHTML + "\n";
+                }
+
+                // Strip scripts from raw template content to avoid duplicate executions in the DOM
+                for (var j = scripts.length - 1; j >= 0; j--) {
+                    scripts[j].parentNode.removeChild(scripts[j]);
+                }
+
+                var cleanHtml = tempDiv.innerHTML;
+                var compOpts = {};
+
+                // Evaluate and merge the legacy component's setup script block
+                if (scriptText.trim().length > 0) {
+                    try {
+                        var scriptFunc = new Function(scriptText);
+                        compOpts = scriptFunc() || {};
+                    } catch (scriptErr) {
+                        console.error("❌ Error compiling script block in legacy component: " + url, scriptErr);
+                    }
+                }
+
+                compOpts.template = cleanHtml;
+                callback(Vue.markRaw(compOpts));
+
+            } catch (err) {
+                console.error("❌ Failed compiling legacy template fallback in loadComponent:", err);
+
+                // Last ditch effort: assign raw template string
+                const fallbackComponent = {
+                    template: responseText
+                };
+                callback(Vue.markRaw(fallbackComponent));
+            }
+        };
     };
 
     // =========================================================================

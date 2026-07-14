@@ -1,3 +1,4 @@
+<#--
     =========================================================================
     DefaultScreenMacros.qmeta.ftl
     =========================================================================
@@ -215,10 +216,9 @@ function bootQmetaApplication() {
 <#-- ================ 3. LAYOUT & CONTAINER PRIMITIVES ================ -->
 <#macro "container">
 {
-  "@type": "Container",
+  "@type": "div",
   "id": "${.node['@id']!}",
   "style": "${.node['@style']!}",
-  <#-- CLEAN: Outputs "agi-ide#agi-ide-header" -->
   "mariaId": "${getCleanPath()}#${.node['@id']!'container-' + qmetaElementCounter}",
   "children": [<@renderChildren parentNode=.node/>]
 }
@@ -226,18 +226,64 @@ function bootQmetaApplication() {
 
 <#macro "container-box">
 {
-  "@type": "ContainerBox",
+  "@type": "m-container-box",
   "id": "${.node['@id']!}",
-  "title": "${.node['box-header'][0]['@title']!}",
+  <#-- 🎯 FIX: Check box title attribute first, fall back safely to nested box-header element -->
+  "title": "${.node['@title']!(.node['box-header'][0]['@title']!'')}",
   "mariaId": "${sri.getActiveScreenDef().getLocation()}#${.node['@id']!''}",
   "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
 
+<#macro "container-row">
+{
+  "@type": "container-row",
+  "id": "${.node['@id']!}",
+  "class": "${.node['@class']!}",
+  "style": "${.node['@style']!}",
+  "children": [<@renderChildren parentNode=.node/>]
+}
+</#macro>
+
+<#macro "row-col">
+{
+  "@type": "row-col",
+  "class": "${.node['@class']!}",
+  "style": "${.node['@style']!}",
+  "attributes": {
+    "cols": "${.node['@cols']!}",
+    "xs": "${.node['@xs']!}",
+    "sm": "${.node['@sm']!}",
+    "md": "${.node['@md']!}",
+    "lg": "${.node['@lg']!}",
+    "xl": "${.node['@xl']!}"
+  },
+  "children": [<@renderChildren parentNode=.node/>]
+}
+</#macro>
+
+<#-- Add a pass-through handler for m-tree-top and slot tags so they don't get swallowed -->
+<#macro "m-tree-top">
+{
+  "@type": "m-tree-top",
+  "id": "${.node['@id']!}",
+  "attributes": {
+    "id": "${.node['@id']!}",
+    "items": "${.node['@items']!}",
+    "openPath": "${.node['@openPath']!}"
+  }
+}
+</#macro>
+
+<#-- Handle toolbar or layout slots by letting children recurse cleanly -->
+<#macro "slot">
+<@renderChildren parentNode=.node/>
+</#macro>
+
 <#-- ================ 4. HIGH-FIDELITY FORM CORE MAPPINGS ================ -->
 <#macro "form-single">
 {
-  "@type": "FormSingle",
+  "@type": "m-form",
   "name": "${.node['@name']!}",
   "transition": "${.node['@transition']!}",
   "action": "${sri.buildUrl(.node['@transition']!).getTarget()!}",
@@ -279,7 +325,7 @@ function bootQmetaApplication() {
 
 <#macro "submit">
 {
-  "@type": "submit",
+  "@type": "q-btn",
   "attributes": {
     "text": "${.node['@text']!'Submit'}"
   }
@@ -290,7 +336,7 @@ function bootQmetaApplication() {
 <#macro "link">
 <#global qmetaElementCounter = qmetaElementCounter + 1>
 {
-  "@type": "Link",
+  "@type": "m-link",
   "text": "${.node['@text']!}",
   "url": "${sri.buildUrl(.node['@url']!'.').getUrl()!}",
   <#-- CLEAN: Outputs "agi-ide#link-2" -->
@@ -301,11 +347,10 @@ function bootQmetaApplication() {
 <#macro "label">
 <#global qmetaElementCounter = qmetaElementCounter + 1>
 {
-  "@type": "Label",
-  "text": "${.node['@text']!}",
+  "@type": "span",
   "style": "${.node['@style']!}",
-  <#-- CLEAN: Outputs "agi-ide#label-1" -->
-  "mariaId": "${getCleanPath()}#label-${qmetaElementCounter}"
+  "mariaId": "${getCleanPath()}#label-${qmetaElementCounter}",
+  "children": ["${.node['@text']!}"]
 }
 </#macro>
 
