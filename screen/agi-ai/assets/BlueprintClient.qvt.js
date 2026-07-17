@@ -179,59 +179,103 @@
     // =========================================================================
     // 2. THE RECURSIVE BLUEPRINT CORE INTERPRETATION NODE
     // =========================================================================
+    // =========================================================================
+    // 2. THE RECURSIVE BLUEPRINT CORE INTERPRETATION NODE (RACE-PROOF UPGRADE)
+    // =========================================================================
     window.AgiComponents['m-blueprint-node'] = {
         name: 'MBlueprintNode',
         props: {
-            node: { required: true }, // Loosen Type check to handle raw Proxy Arrays natively
+            node: { required: true },
             context: { type: Object, default: () => ({}) }
+        },
+        data() {
+            return {
+                // 🎯 Track element readiness reactively
+                isResolved: false,
+                pollInterval: null
+            };
+        },
+        computed: {
+            targetType() {
+                if (!this.node) return 'div';
+                let activeNode = this.node;
+                if (Array.isArray(activeNode)) {
+                    if (activeNode.length === 0) return 'div';
+                    activeNode = activeNode[0];
+                }
+                return !activeNode['@type'] && Array.isArray(activeNode.widgets) ? 'div' : (activeNode['@type'] || 'div');
+            }
+        },
+        mounted() {
+            this.ensureComponentResolution();
+        },
+        beforeUnmount() {
+            if (this.pollInterval) clearInterval(this.pollInterval);
+        },
+        methods: {
+            ensureComponentResolution() {
+                const tag = this.targetType;
+
+                // 1. Immediate resolution pass for standard elements or ready assets
+                if (tag === 'div' || tag === 'span' || tag.startsWith('q-') || window.AgiComponents[tag]) {
+                    this.isResolved = true;
+                    return;
+                }
+
+                // 2. 🎯 THE RACE KILLER: Poll until the script arrives and populates the handle
+                this.pollInterval = setInterval(() => {
+                    if (window.AgiComponents[tag]) {
+                        this.isResolved = true;
+                        clearInterval(this.pollInterval);
+                        console.info(`🎯 [BlueprintClient] Synchronized late asset loop for component: <${tag}>`);
+                    }
+                }, 10);
+            }
         },
         render() {
             if (!this.node) return null;
 
-            // 🎯 STEP 1: DETECT AND STRIP UNEXPECTED OUTER ARRAY WRAPPERS
             let activeNode = this.node;
             if (Array.isArray(activeNode)) {
                 if (activeNode.length === 0) return null;
-                activeNode = activeNode[0]; // Safely pull out the real screen/widget node payload
+                activeNode = activeNode[0];
             }
 
-            // 🎯 STEP 2: RUN METADATA NORMALIZATION AGAINST THE REAL TARGET PAYLOAD
             const isScreenWrapper = !activeNode['@type'] && Array.isArray(activeNode.widgets);
-
             const type = isScreenWrapper ? 'div' : (activeNode['@type'] || 'div');
             const properties = activeNode.attributes || {};
-
-            // Unify Moqui layout arrays across child and parent contexts seamlessly
             const childNodes = activeNode.children || activeNode.widgets || [];
 
-            console.log("In m-blueprint-node, type: " + type);
+            // 🎯 Check if we are still waiting on a custom asset script to finish loading
+            if (!this.isResolved && type !== 'div' && type !== 'span' && !type.startsWith('q-')) {
+                // Render a non-breaking inline skeleton frame while the network script transfers
+                return Vue.h('div', { class: 'q-pa-md bg-grey-1 text-grey-5 rounded-borders text-caption' }, [
+                    Vue.h(Vue.resolveComponent('q-spinner-dots'), { size: '14px', class: 'q-mr-xs' }),
+                    `Assembling component block <${type}>...`
+                ]);
+            }
+
+            // Standard resolution lookup block
             let componentDefinition = window.AgiComponents[type];
             if (!componentDefinition) {
                 if (type.startsWith('q-') || type === 'div' || type === 'span') {
                     componentDefinition = type;
                 } else {
-                    // Fallback to searching Vue's application context natively
                     componentDefinition = Vue.resolveComponent(type) || type;
                 }
             }
-            console.log("In m-blueprint-node, componentDefinition : " + JSON.stringify(componentDefinition));
 
             const childrenRenderMap = childNodes.map(child => {
-                let hChildren = Vue.h(window.AgiComponents['m-blueprint-node'], {
+                return Vue.h(window.AgiComponents['m-blueprint-node'], {
                     node: child,
                     context: this.context
                 });
-                return hChildren;
             });
 
-            const h1 = Vue.h(componentDefinition, properties, {
+            return Vue.h(componentDefinition, properties, {
                 default: () => childrenRenderMap
             });
-            return h1;
-        },
-        mounted() {
-            console.log("m-blueprint-node mounted");
-        },
+        }
     };
 
     window.AgiComponents['ComponentFactory'] = {

@@ -1416,7 +1416,10 @@ window.AgiComponents['m-subscreens-active'] = {
 
             root.loadingSubscreens[fullPath] = true; root.loading++;
             root.currentLoadRequest = moqui.loadComponent(urlInfo, function (comp) {
-                delete root.loadingSubscreens[fullPath]; root.currentLoadRequest = null;
+
+                console.info("⚙️ [AgiVue] comp: " + JSON.stringify(comp));
+                delete root.loadingSubscreens[fullPath];
+                root.currentLoadRequest = null;
                 vm.activeComponent = Vue.markRaw(comp);
                 if (!vm.itemName && vm.$router) {
                     if (pathIndex === (root.currentPathList.length - 1)) vm.$router.replace(qvtFullPath);
