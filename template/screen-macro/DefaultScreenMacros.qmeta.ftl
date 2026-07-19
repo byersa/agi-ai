@@ -65,6 +65,10 @@
     <script src="http://localhost:8080/agi-ai-assets/moqui-utils.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ai-assets/MoquiAiVue.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ai-assets/BlueprintClient.qvt.js" type="text/javascript"></script>
+    <script src="http://localhost:8080/agi-ide-assets/AgiEditorShare.qvt.js" type="text/javascript"></script>
+    <script src="http://localhost:8080/agi-ide-assets/AgiMcpOrchestrator.js" type="text/javascript"></script>
+    <script src="http://localhost:8080/agi-ide-assets/AgiSubWorkspace.qvt.js" type="text/javascript"></script>
+    <script src="http://localhost:8080/agi-ide-assets/AgiWorkspace.qvt.js" type="text/javascript"></script>
 
     <script type="text/javascript">
     (function() {
@@ -75,6 +79,7 @@
         // Deep execution pass down into children to assemble the meta-json object natively
         window.AGI_RAW_META_TREE = [<@renderChildren parentNode=.node/>];
 
+        console.log("[AGI_RAW_META_TREE]: " + JSON.stringify(window.AGI_RAW_META_TREE) );
 // 🎯 Add a global mounting guard at the very top of your script block
 
 // 🎯 Global mounting guard to prevent overlapping interval initialization passes
@@ -158,6 +163,9 @@ function bootQmetaApplication() {
         }
 
         const app = Vue.createApp(appOptions);
+
+        window.moqui = window.moqui || {};
+        window.moqui.webrootVueApp = app;
         
         function mountAppWithComponents() {
             if (!window.AgiComponents || !window.AgiComponents['m-blueprint-node']) {
@@ -215,10 +223,19 @@ function bootQmetaApplication() {
 
 <#-- ================ 3. LAYOUT & CONTAINER PRIMITIVES ================ -->
 <#macro "container">
+<#-- 1. Grab class or type safely -->
+<#local containerClass = .node['@class']!''>
+<#local containerType = .node['@type']!'div'>
+
+<#-- 2. If class starts with 'agi-' or 'm-', treat it as our custom Vue component type -->
+<#local resolvedType = containerType>
+<#if containerClass?starts_with("agi-") || containerClass?starts_with("m-")>
+  <#local resolvedType = containerClass>
+</#if>
 {
-  "@type": "div",
+  "@type": "${resolvedType}",
   "id": "${.node['@id']!}",
-  "style": "${.node['@style']!}",
+  "style": "${.node['@style']!?json_string}",
   "mariaId": "${getCleanPath()}#${.node['@id']!'container-' + qmetaElementCounter}",
   "children": [<@renderChildren parentNode=.node/>]
 }
@@ -432,5 +449,81 @@ function bootQmetaApplication() {
   "attributes": {
     "pathIndex": "${.node['@pathIndex']!'-1'}"
   }
+}
+</#macro>
+
+<#macro "subscreens-all">
+{
+  "@type": "m-subscreens-all",
+  "id": "${.node['@id']!'subscreens-all'}",
+  "subscreens": [
+    <#-- Query Moqui's active ScreenDefinition dynamically for all defined subscreen items -->
+    <#list sri.getActiveScreenDef().getSubscreensByName().values() as subscreenItem>
+      {
+        "name": "${subscreenItem.getName()}",
+        "componentName": "agi-${subscreenItem.getName()?lower_case?replace('_', '-')}",
+        "url": "${sri.getCurrentScreenUrl()}/${subscreenItem.getName()}"
+      }<#if subscreenItem_has_next>,</#if>
+    </#list>
+  ]
+}
+</#macro>
+
+<#-- ================ 9. AGI WORKSPACE EDITORS & TERMINAL PALETTE ================ -->
+
+<#macro "agi-canvas-editor">
+{
+  "@type": "agi-canvas-editor",
+  "attributes": {
+    "screenPath": "${.node['@screen-path']!}",
+    "layoutTree": "${.node['@layout-tree']!}"
+  }
+}
+</#macro>
+
+<#macro "agi-screen-editor">
+{
+  "@type": "agi-screen-editor",
+  "attributes": {
+    "screenPath": "${.node['@screen-path']!}",
+    "layoutTree": "${.node['@layout-tree']!}"
+  }
+}
+</#macro>
+
+<#macro "agi-component-editor">
+{
+  "@type": "agi-component-editor",
+  "attributes": {
+    "screenPath": "${.node['@screen-path']!}",
+    "layoutTree": "${.node['@layout-tree']!}"
+  }
+}
+</#macro>
+
+<#macro "agi-command-palette">
+{
+  "@type": "agi-command-palette"
+}
+</#macro>
+
+<#macro "agi-container">
+{
+  "@type": "div",
+  "id": "${.node['@id']!}",
+  "class": "${.node['@class']!}",
+  "attributes": {
+    <#-- 🤖 Preserve the raw source intent for design-time traceability -->
+    "ai-intent": "${.node['@ai-intent']!?json_string}",
+    
+    <#-- Pass compiled Vue attributes down directly -->
+    "v-if": "${.node['@v-if']!}",
+    "v-data": "${.node['@v-data']!}",
+    "v-model": "${.node['@v-model']!}",
+    "v-bind": "${.node['@v-bind']!}",
+    "v-on": "${.node['@v-on']!}"
+  },
+  "mariaId": "${getCleanPath()}#${.node['@id']!'container-' + qmetaElementCounter}",
+  "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
