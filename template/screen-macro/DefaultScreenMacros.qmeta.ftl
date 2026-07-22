@@ -66,6 +66,7 @@
     <script src="http://localhost:8080/agi-ai-assets/MoquiAiVue.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ai-assets/BlueprintClient.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ide-assets/AgiEditorShare.qvt.js" type="text/javascript"></script>
+    <script src="http://localhost:8080/agi-ide-assets/agi-ide-store.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ide-assets/AgiMcpOrchestrator.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ide-assets/AgiSubWorkspace.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ide-assets/AgiWorkspace.qvt.js" type="text/javascript"></script>
@@ -190,6 +191,7 @@ function bootQmetaApplication() {
             
             // Finalize initialization pass
             app.use(Quasar);
+            app.use(Pinia.createPinia());
             app.mount('#q-app');
             console.log("🚀 [AGI QMETA] Application context mounted successfully after asset sync.");
         }

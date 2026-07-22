@@ -98,12 +98,24 @@
             <parameter name="metaJsonBuffer" type="String" required="true"/>
         </in-parameters>
         <actions>
-            <service-call name="update#org.moqui.ai.WorkspaceBuffer"
-                          in-map="[workspaceBufferId: workspaceBufferId, metaJsonBuffer: metaJsonBuffer, lastUpdatedStamp: ec.user.nowTimestamp]"/>
+            <log message="In store#WorkspaceBuffer, metaJsonBuffer: ${metaJsonBuffer}" />
+            <script><![CDATA[
+                if (metaJsonBuffer && !metaJsonBuffer.trim().startsWith("<")) {
+                    ec.service.sync().name("update#org.moqui.ai.WorkspaceBuffer")
+                        .parameters([
+                            workspaceBufferId: workspaceBufferId, 
+                            metaJsonBuffer: metaJsonBuffer, 
+                            lastUpdatedStamp: ec.user.nowTimestamp
+                        ])
+                        .call()
+                } else {
+                    ec.logger.error("❌ [WorkspaceBuffer Guard] Intercepted HTML content for ID: ${workspaceBufferId}. Refusing to persist to database.")
+                }
+            ]]></script>
         </actions>
     </service>
 
-<service verb="compile" noun="TreeToXml" type="inline">
+    <service verb="compile" noun="TreeToXml" type="inline">
         <in-parameters>
             <parameter name="layoutTree" type="Map" required="false"/>
         </in-parameters>
