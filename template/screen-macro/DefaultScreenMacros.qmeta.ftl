@@ -301,15 +301,23 @@ function bootQmetaApplication() {
 
 <#-- ================ 4. HIGH-FIDELITY FORM CORE MAPPINGS ================ -->
 <#macro "form-single">
+<#local transitionName = .node['@transition']!''>
+<#local actionUrl = "#">
+<#if transitionName?has_content>
+  <#local actionUrl = (sri.buildUrl(transitionName).getTarget())!'#'>
+</#if>
 {
   "@type": "m-form",
   "name": "${.node['@name']!}",
-  "transition": "${.node['@transition']!}",
-  "action": "${sri.buildUrl(.node['@transition']!).getTarget()!}",
+  "transition": "${transitionName}",
+  "action": "${actionUrl}",
   "mariaId": "${sri.getActiveScreenDef().getLocation()}#${.node['@name']!}",
   "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
+
+<#macro "default-field"><@renderChildren parentNode=.node/></#macro>
+<#macro "conditional-field"><@renderChildren parentNode=.node/></#macro>
 
 <#macro "field">
 {
@@ -333,10 +341,11 @@ function bootQmetaApplication() {
 </#macro>
 
 <#macro "drop-down">
+<#local allowEmptyVal = .node['@allow-empty']!'true'>
 { 
   "@type": "m-drop-down", 
   "attributes": { 
-    "allow-empty": "${.node['@allow-empty']!'true'}",
+    "allow-empty": ${(allowEmptyVal == "true")?string("true", "false")},
     "value": ""
   } 
 }
@@ -346,7 +355,28 @@ function bootQmetaApplication() {
 {
   "@type": "q-btn",
   "attributes": {
-    "text": "${.node['@text']!'Submit'}"
+    "label": "${.node['@text']!'Submit'}",
+    "type": "submit",
+    "color": "primary"
+  }
+}
+</#macro>
+
+<#macro "text-area">
+{
+  "@type": "m-text-line",
+  "attributes": {
+    "type": "textarea",
+    "placeholder": "${.node['@placeholder']!}"
+  }
+}
+</#macro>
+
+<#macro "discussion-tree">
+{
+  "@type": "discussion-tree",
+  "attributes": {
+    "workEffortId": "${.node['@work-effort-id']!''}"
   }
 }
 </#macro>

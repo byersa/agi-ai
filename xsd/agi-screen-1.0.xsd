@@ -1,0 +1,38 @@
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:include schemaLocation="../../../../framework/xsd/xml-screen-3.xsd"/>
+
+    <!-- Include the baseline screen definitions -->
+    <xs:include schemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"/>
+
+    <!-- 🎯 EXTEND THE CONTAINER ELEMENT -->
+    <xs:element name="agi-container">
+        <xs:complexType>
+            <!-- Allow nested widgets inside our custom container -->
+            <xs:sequence>
+                <xs:any minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+            </xs:sequence>
+            
+            <!-- Standard Moqui Attributes -->
+            <xs:attribute name="id" type="xs:string" use="optional"/>
+            <xs:attribute name="class" type="xs:string" use="optional"/>
+            
+            <!-- 🤖 FIRST-CLASS INTENT & VUE BINDINGS -->
+            <xs:attribute name="ai-intent" type="xs:string" use="optional">
+                <xs:annotation>
+                    <xs:documentation>
+                        Plain text or structured keyword block representing layout, visibility, 
+                        and security constraints for the AI Design-Time Compiler.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:attribute>
+            
+            <!-- Safe, Explicit Pass-Through Targets for compiled directives -->
+            <xs:attribute name="v-if" type="xs:string" use="optional"/>
+            <xs:attribute name="v-data" type="xs:string" use="optional"/>
+            <xs:attribute name="v-model" type="xs:string" use="optional"/>
+            <xs:attribute name="v-bind" type="xs:string" use="optional"/>
+            <xs:attribute name="v-on" type="xs:string" use="optional"/>
+        </xs:complexType>
+    </xs:element>
+
+</xs:schema>

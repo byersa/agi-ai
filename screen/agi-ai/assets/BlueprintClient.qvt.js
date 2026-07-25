@@ -179,9 +179,6 @@
     // =========================================================================
     // 2. THE RECURSIVE BLUEPRINT CORE INTERPRETATION NODE
     // =========================================================================
-    // =========================================================================
-    // 2. THE RECURSIVE BLUEPRINT CORE INTERPRETATION NODE (RACE-PROOF UPGRADE)
-    // =========================================================================
     window.AgiComponents['m-blueprint-node'] = {
         name: 'MBlueprintNode',
         props: {
@@ -190,7 +187,6 @@
         },
         data() {
             return {
-                // 🎯 Track element readiness reactively
                 isResolved: false,
                 pollInterval: null
             };
@@ -198,11 +194,7 @@
         computed: {
             targetType() {
                 if (!this.node) return 'div';
-                let activeNode = this.node;
-                if (Array.isArray(activeNode)) {
-                    if (activeNode.length === 0) return 'div';
-                    activeNode = activeNode[0];
-                }
+                let activeNode = Array.isArray(this.node) ? (this.node[0] || {}) : this.node;
                 return !activeNode['@type'] && Array.isArray(activeNode.widgets) ? 'div' : (activeNode['@type'] || 'div');
             }
         },
@@ -215,19 +207,14 @@
         methods: {
             ensureComponentResolution() {
                 const tag = this.targetType;
-
-                // 1. Immediate resolution pass for standard elements or ready assets
                 if (tag === 'div' || tag === 'span' || tag.startsWith('q-') || window.AgiComponents[tag]) {
                     this.isResolved = true;
                     return;
                 }
-
-                // 2. 🎯 THE RACE KILLER: Poll until the script arrives and populates the handle
                 this.pollInterval = setInterval(() => {
                     if (window.AgiComponents[tag]) {
                         this.isResolved = true;
                         clearInterval(this.pollInterval);
-                        console.info(`🎯 [BlueprintClient] Synchronized late asset loop for component: <${tag}>`);
                     }
                 }, 10);
             }
@@ -235,36 +222,42 @@
         render() {
             if (!this.node) return null;
 
-            let activeNode = this.node;
-            if (Array.isArray(activeNode)) {
-                if (activeNode.length === 0) return null;
-                activeNode = activeNode[0];
-            }
+            let activeNode = Array.isArray(this.node) ? (this.node[0] || {}) : this.node;
 
             const isScreenWrapper = !activeNode['@type'] && Array.isArray(activeNode.widgets);
-            const type = isScreenWrapper ? 'div' : (activeNode['@type'] || 'div');
-            const properties = activeNode.attributes || {};
-            const childNodes = activeNode.children || activeNode.widgets || [];
+            let type = isScreenWrapper ? 'div' : (activeNode['@type'] || 'div');
 
-            // 🎯 Check if we are still waiting on a custom asset script to finish loading
-            if (!this.isResolved && type !== 'div' && type !== 'span' && !type.startsWith('q-')) {
-                // Render a non-breaking inline skeleton frame while the network script transfers
-                return Vue.h('div', { class: 'q-pa-md bg-grey-1 text-grey-5 rounded-borders text-caption' }, [
-                    Vue.h(Vue.resolveComponent('q-spinner-dots'), { size: '14px', class: 'q-mr-xs' }),
-                    `Assembling component block <${type}>...`
-                ]);
+            // 1. Unify and extract raw properties
+            let propsMap = { ...(activeNode.attributes || {}) };
+            if (activeNode.title) propsMap.title = activeNode.title;
+            if (activeNode.name && !propsMap.name) propsMap.name = activeNode.name;
+            if (activeNode.id) propsMap.id = activeNode.id;
+
+            // 2. Normalize Quasar-specific component properties
+            if (type === 'q-btn' || type === 'submit') {
+                type = 'q-btn';
+                // Resolve button text/label priority
+                propsMap.label = propsMap.label || propsMap.text || activeNode.title || 'Submit';
+                delete propsMap.text;
+                if (!propsMap.color) propsMap.color = 'primary';
+            } else if (['q-input', 'q-select', 'q-textarea', 'm-text-line', 'm-drop-down'].includes(type)) {
+                // Ensure inputs receive Quasar's expected 'label' prop
+                propsMap.label = propsMap.label || propsMap.title || activeNode.title || '';
             }
 
-            // Standard resolution lookup block
+            const childNodes = activeNode.children || activeNode.widgets || [];
+
+            // 3. Resolve Component Definition cleanly
             let componentDefinition = window.AgiComponents[type];
             if (!componentDefinition) {
-                if (type.startsWith('q-') || type === 'div' || type === 'span') {
-                    componentDefinition = type;
-                } else {
+                if (type.startsWith('q-')) {
                     componentDefinition = Vue.resolveComponent(type) || type;
+                } else {
+                    componentDefinition = type;
                 }
             }
 
+            // 4. Recursively build child VNodes via Vue.h
             const childrenRenderMap = childNodes.map(child => {
                 return Vue.h(window.AgiComponents['m-blueprint-node'], {
                     node: child,
@@ -272,10 +265,11 @@
                 });
             });
 
-            return Vue.h(componentDefinition, properties, {
+            // 5. Render active component passing the normalized props map
+            return Vue.h(componentDefinition, propsMap, {
                 default: () => childrenRenderMap
             });
-        }
+        },
     };
 
     window.AgiComponents['ComponentFactory'] = {

@@ -2,121 +2,157 @@
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
-<service verb="get" noun="WorkspaceBuffer" type="inline">
-        <description>
-            Retrieves an active Meta-JSON layout buffer for a given artifact path.
-            If no buffer exists, or if a corrupted error state is cached, it forces a fresh compilation pass.
-        </description>
+    <!-- ===================================================================== -->
+    <!-- GET WORKSPACE BUFFER                                                  -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="WorkspaceBuffer" type="inline">
+        <description>Retrieves active Meta-JSON layout tree, falling back to parsing the physical XML screen file on miss or stub detection.</description>
         <in-parameters>
-            <parameter name="artifactUri" type="String" required="true"/>
-            <parameter name="userId" type="String"/>
+            <parameter name="artifactUri" required="true"/>
+            <parameter name="userId"/>
         </in-parameters>
         <out-parameters>
-            <parameter name="metaJsonBuffer" type="String"/>
-            <parameter name="workspaceBufferId" type="String"/>
+            <parameter name="workspaceBufferId"/>
+            <parameter name="metaJsonBuffer"/>
         </out-parameters>
         <actions>
-
-            <log message="In get#WorkspaceBuffer, artifactUri: ${artifactUri}" />
-            <log message="In get#WorkspaceBuffer, userId: ${userId}" />
-            <entity-find entity-name="org.moqui.ai.WorkspaceBuffer" list="bufferList">
-                <econdition field-name="artifactUri" from="artifactUri"/>
-            </entity-find>
-            <log message="In get#WorkspaceBuffer, bufferList: ${bufferList}" />
-
             <script><![CDATA[
-                hasValidCache = false
-                if (bufferList) {
-                    def cachedRow = bufferList[0]
-                    ec.logger.info("cachedRow: " + cachedRow)
-                    if (cachedRow.metaJsonBuffer != null && !cachedRow.metaJsonBuffer.contains('"error"')) {
-                        hasValidCache = true
-                        metaJsonBuffer = cachedRow.metaJsonBuffer
-                        workspaceBufferId = cachedRow.workspaceBufferId
-                    } else {
-                        // Safely clear out the poison pill via inline execution facade context
-                        ec.service.sync().name("delete#org.moqui.ai.WorkspaceBuffer")
-                            .parameter("workspaceBufferId", cachedRow.workspaceBufferId).call()
+                import groovy.json.JsonSlurper
+                import groovy.json.JsonOutput
+                
+                String activeUserId = userId ?: ec.user.getUserId() ?: "system_ide_user"
+                
+                // Search DB for latest record across current user OR system fallback user
+                def bufferList = ec.entity.find("org.moqui.ai.WorkspaceBuffer")
+                    .condition("artifactUri", artifactUri)
+                    .condition("userId", activeUserId)
+                    .orderBy("-lastUpdatedStamp")
+                    .useCache(false)
+                    .list()
+                
+                def bufferRow = bufferList ? bufferList[0] : null
+                
+                if (!bufferRow) {
+                    // Secondary check for system_ide_user or fallback
+                    def fallbackList = ec.entity.find("org.moqui.ai.WorkspaceBuffer")
+                        .condition("artifactUri", artifactUri)
+                        .orderBy("-lastUpdatedStamp")
+                        .useCache(false)
+                        .list()
+                    bufferRow = fallbackList ? fallbackList[0] : null
+                }
+    
+                boolean isStubOrEmpty = false
+                if (bufferRow?.metaJsonBuffer) {
+                    String rawJson = bufferRow.metaJsonBuffer
+                    // Detect truncated stub trees
+                    if (rawJson.contains('"children":[]') && !rawJson.contains('form-single') && !rawJson.contains('field')) {
+                        isStubOrEmpty = true
+                        ec.logger.warn("⚠️ [get#WorkspaceBuffer] Detected truncated stub row [${bufferRow.workspaceBufferId}]. Forcing re-parse from disk.")
+                    }
+                } else {
+                    isStubOrEmpty = true
+                }
+    
+                if (!isStubOrEmpty && bufferRow?.metaJsonBuffer) {
+                    context.workspaceBufferId = bufferRow.workspaceBufferId
+                    context.metaJsonBuffer = bufferRow.metaJsonBuffer
+                } else {
+                    // Fall back to reading physical XML file from disk
+                    ec.logger.info("📄 [get#WorkspaceBuffer] Reading physical XML file from disk for: ${artifactUri}")
+                    Map parseResult = ec.service.sync().name("org.moqui.ai.AgiWorkspaceServices.parse#XmlToTree")
+                        .parameter("artifactUri", artifactUri)
+                        .call()
+    
+                    if (parseResult?.layoutTree) {
+                        String jsonFromDisk = JsonOutput.toJson(parseResult.layoutTree)
+    
+                        // Overwrite/Seed DB buffer with complete screen layout
+                        Map storeResult = ec.service.sync().name("org.moqui.ai.AgiWorkspaceServices.store#WorkspaceBuffer")
+                            .parameters([
+                                workspaceBufferId: bufferRow?.workspaceBufferId,
+                                artifactUri: artifactUri, 
+                                userId: activeUserId, 
+                                metaJsonBuffer: jsonFromDisk
+                            ])
+                            .call()
+    
+                        context.workspaceBufferId = storeResult.workspaceBufferId
+                        context.metaJsonBuffer = jsonFromDisk
                     }
                 }
             ]]></script>
-            
-            <if condition="hasValidCache">
-                <then>
-                </then>
-                <else>
-                    <service-call name="org.moqui.ide.AgiMcpServices.get#FormMetadata" 
-                      in-map="[screenPath: artifactUri]" 
-                      out-map="metaResult"/>
-        
-                    <log message="In get#WorkspaceBuffer, metaResult: ${metaResult}" />
-                    <set field="rawJsonText" from="metaResult.metadataJson"/>
-                    
-                    <script><![CDATA[
-                        if (rawJsonText) {
-                            // Stitch missing sibling object commas: \}\s*\{ -> },{
-                            rawJsonText = rawJsonText.trim().replaceAll("\\}\\s*\\{", "},{");
-                            
-                            // Map json-ld "@type" tokens to standard flat "type" keys
-                            rawJsonText = rawJsonText.replaceAll("\"@type\"", "\"type\"");
-                        } else {
-                            rawJsonText = "{ \"id\": \"root\", \"tagName\": \"form\", \"children\": [] }";
-                        }
-                        
-                        // Explicit boolean marker calculation isolated from XML parsing constraints
-                        shouldSaveToDb = !rawJsonText.contains('"error"')
-                    ]]></script>
-                    <log message="In get#WorkspaceBuffer, shouldSaveToDB: ${shouldSaveToDB}" />
-                    <log message="In get#WorkspaceBuffer, metaResult(2): ${metaResult}" />
-            
-                    <if condition="shouldSaveToDb">
-                        <then>
-                            <service-call name="create#org.moqui.ai.WorkspaceBuffer" out-map="createResult"
-                                          in-map="[
-                                              artifactUri: artifactUri, 
-                                              userId: userId ?: ec.user.userId ?: 'system_ide_user', 
-                                              metaJsonBuffer: rawJsonText, 
-                                              lastUpdatedStamp: ec.user.nowTimestamp
-                                          ]"/>
-                            <set field="workspaceBufferId" from="createResult.workspaceBufferId"/>
-                        </then>
-                    </if>
-                    
-                    <set field="metaJsonBuffer" from="rawJsonText"/>
-                </else>
-            </if>
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- STORE WORKSPACE BUFFER                                                -->
+    <!-- ===================================================================== -->
     <service verb="store" noun="WorkspaceBuffer" type="inline">
-        <description>
-            Updates the stateful layout tree buffer string. 
-            Because enable-audit-log is active on the underlying entity, this automatically triggers a version checkpoint.
-        </description>
+        <description>Stores or updates a Meta-JSON workspace layout buffer safely.</description>
         <in-parameters>
-            <parameter name="workspaceBufferId" type="String" required="true"/>
-            <parameter name="metaJsonBuffer" type="String" required="true"/>
+            <parameter name="workspaceBufferId"/>
+            <parameter name="artifactUri" required="true"/>
+            <parameter name="userId"/>
+            <parameter name="metaJsonBuffer" required="true"/>
         </in-parameters>
+        <out-parameters>
+            <parameter name="workspaceBufferId" required="true"/>
+        </out-parameters>
         <actions>
-            <log message="In store#WorkspaceBuffer, metaJsonBuffer: ${metaJsonBuffer}" />
             <script><![CDATA[
-                if (metaJsonBuffer && !metaJsonBuffer.trim().startsWith("<")) {
-                    ec.service.sync().name("update#org.moqui.ai.WorkspaceBuffer")
-                        .parameters([
-                            workspaceBufferId: workspaceBufferId, 
-                            metaJsonBuffer: metaJsonBuffer, 
-                            lastUpdatedStamp: ec.user.nowTimestamp
-                        ])
-                        .call()
-                } else {
-                    ec.logger.error("❌ [WorkspaceBuffer Guard] Intercepted HTML content for ID: ${workspaceBufferId}. Refusing to persist to database.")
+                String activeUserId = userId ?: ec.user.getUserId() ?: "system_ide_user"
+                String targetBufferId = workspaceBufferId
+    
+                // Self-Healing Primary Key Resolution (Fetch newest)
+                if (!targetBufferId) {
+                    def existingList = ec.entity.find("org.moqui.ai.WorkspaceBuffer")
+                        .condition("artifactUri", artifactUri)
+                        .condition("userId", activeUserId)
+                        .orderBy("-lastUpdatedStamp")
+                        .list()
+                    if (existingList) {
+                        targetBufferId = existingList[0].workspaceBufferId
+                    }
                 }
+                
+                def bufferValue = null
+                if (targetBufferId) {
+                    bufferValue = ec.entity.find("org.moqui.ai.WorkspaceBuffer")
+                        .condition("workspaceBufferId", targetBufferId)
+                        .one()
+                }   
+                if (bufferValue) {
+                    bufferValue.metaJsonBuffer = metaJsonBuffer
+                    bufferValue.lastUpdatedStamp = ec.user.nowTimestamp
+                    bufferValue.update()
+                    ec.logger.info("💾 [store#WorkspaceBuffer] Updated DB row [${targetBufferId}] for URI: ${artifactUri}")
+                } else {
+                    bufferValue = ec.entity.makeValue("org.moqui.ai.WorkspaceBuffer")
+                    bufferValue.artifactUri = artifactUri
+                    bufferValue.userId = activeUserId
+                    bufferValue.metaJsonBuffer = metaJsonBuffer
+                    bufferValue.setSequencedIdPrimary()
+                    bufferValue.create()
+                    targetBufferId = bufferValue.workspaceBufferId
+                    ec.logger.info("💾 [store#WorkspaceBuffer] Created DB row [${targetBufferId}] for URI: ${artifactUri}")
+                }
+    
+                context.workspaceBufferId = targetBufferId
             ]]></script>
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- COMPILE AST TREE TO MOQUI XML                                         -->
+    <!-- ===================================================================== -->
     <service verb="compile" noun="TreeToXml" type="inline">
+        <description>
+            Recursively processes FreeMarker templates (.ftl) by expanding include directives,
+            or converts a layoutTree AST map into standard Moqui screen XML.
+        </description>
         <in-parameters>
+            <parameter name="location" type="String" required="false"/>
             <parameter name="layoutTree" type="Map" required="false"/>
         </in-parameters>
         <out-parameters>
@@ -124,21 +160,116 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
-                def buildXmlNode(Map nodeMap) {
-                    String tagName = nodeMap.tagName ?: "container"
+                import org.moqui.resource.ResourceReference
+                import java.util.regex.Matcher
+                import java.util.regex.Pattern
+
+                // Internal recursive helper to resolve <#include ...> statements
+                def resolveFtlIncludes
+                resolveFtlIncludes = { String loc, Set<String> visited ->
+                    if (!loc) return ""
+
+                    ResourceReference rr = ec.resource.getLocationReference(loc)
+                    if (rr == null || !rr.exists) {
+                        ec.logger.warn("FTL source target not found at location: ${loc}")
+                        return ""
+                    }
+
+                    String canonicalPath = rr.getUrl()?.toString() ?: loc
+                    if (visited.contains(canonicalPath)) {
+                        ec.logger.warn("Circular FTL inclusion detected and skipped: ${canonicalPath}")
+                        return "<!-- Circular include omitted: ${loc} -->"
+                    }
+                    visited.add(canonicalPath)
+
+                    String content = rr.getText()
+                    if (!content) return ""
+
+                    Pattern includePattern = Pattern.compile("<#include\\s+[\"']([^\"']+)[\"'][^>]*\\/?>", Pattern.CASE_INSENSITIVE)
+                    Matcher matcher = includePattern.matcher(content)
+                    StringBuffer expandedContent = new StringBuffer()
+
+                    while (matcher.find()) {
+                        String includePath = matcher.group(1)
+                        String resolvedLocation
+
+                        if (includePath.contains("://") || includePath.startsWith("/")) {
+                            resolvedLocation = includePath
+                        } else {
+                            ResourceReference parentRef = rr.getParent()
+                            resolvedLocation = parentRef != null ? "${parentRef.location}/${includePath}" : includePath
+                        }
+
+                        String embeddedXml = resolveFtlIncludes(resolvedLocation, visited)
+                        matcher.appendReplacement(expandedContent, Matcher.quoteReplacement(embeddedXml))
+                    }
+                    matcher.appendTail(expandedContent)
+                    return expandedContent.toString()
+                }
+
+                // Tag mapping dictionary derived from DefaultScreenMacros.qmeta.ftl
+                def tagMap = [
+                    'div': 'container',
+                    'm-form': 'form-single',
+                    'FormField': 'field',
+                    'm-text-line': 'text-line',
+                    'm-drop-down': 'drop-down',
+                    'q-btn': 'submit'
+                ]
+
+                // Helper to escape standard XML attributes
+                def escapeXml = { String str ->
+                    if (!str) return ""
+                    return str.replace("&", "&amp;")
+                              .replace("<", "&lt;")
+                              .replace(">", "&gt;")
+                              .replace("\"", "&quot;")
+                              .replace("'", "&apos;")
+                }
+
+                // Internal recursive helper to transform layoutTree Map into Moqui XML
+                def buildXmlNode
+                buildXmlNode = { Map nodeMap ->
+                    if (!nodeMap) return ""
+
+                    String rawTag = (nodeMap.tagName ?: nodeMap.type ?: nodeMap['@type'] ?: "container").toString().replaceAll("^@", "")
+                    String tagName = tagMap.get(rawTag, rawTag)
+
                     StringBuilder sb = new StringBuilder("<${tagName}")
-                    
-                    // Inject properties as valid XML attributes
-                    nodeMap.each { k, v ->
-                        if (k != 'children' && k != 'tagName' && k != 'id' && v != null) {
-                            sb.append(" ${k}=\"${v}\"")
+                    List childrenList = []
+
+                    // Collect nested attributes from QMETA AST
+                    Map attrs = [:]
+                    if (nodeMap.attributes instanceof Map) {
+                        attrs.putAll(nodeMap.attributes as Map)
+                    }
+
+                    nodeMap.each { Object kObj, Object v ->
+                        if (v == null) return
+                        String k = kObj.toString()
+
+                        if (k == 'children' || k == 'widgets') {
+                            if (v instanceof List) childrenList.addAll((List) v)
+                            else if (v instanceof Map) childrenList.add((Map) v)
+                        } else if (k != 'tagName' && k != 'type' && k != '@type' && k != 'mariaId' && k != 'id' && k != 'attributes' && k != 'ai-intent') {
+                            if (!(v instanceof Map) && !(v instanceof List)) {
+                                attrs[k] = v
+                            }
                         }
                     }
-                    
-                    if (nodeMap.children) {
+
+                    attrs.each { String ak, Object av ->
+                        if (av != null && ak != 'children' && ak != 'widgets') {
+                            sb.append(" ${ak}=\"${escapeXml(av.toString())}\"")
+                        }
+                    }
+
+                    if (childrenList) {
                         sb.append(">\n")
-                        nodeMap.children.each { child ->
-                            sb.append(buildXmlNode(child as Map))
+                        childrenList.each { Object child ->
+                            if (child instanceof Map) {
+                                sb.append(buildXmlNode((Map) child))
+                            }
                         }
                         sb.append("</${tagName}>\n")
                     } else {
@@ -146,16 +277,120 @@
                     }
                     return sb.toString()
                 }
-                
-                // Wrap your dynamic layout elements in the standard screen envelope structure
-                String rawTreeText = buildXmlNode(layoutTree)
-                xmlText = """<?xml version="1.0" encoding="UTF-8"?>
-                           <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-                               <widgets>
-                                   ${rawTreeText}
-                               </widgets>
-                           </screen>"""
+
+                // Main execution logic
+                if (location) {
+                    xmlText = resolveFtlIncludes(location, new HashSet<String>())
+                } else if (layoutTree) {
+                    String rawTreeText = buildXmlNode(layoutTree)
+                    xmlText = """<?xml version="1.0" encoding="UTF-8"?>
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <widgets>
+${rawTreeText}    </widgets>
+</screen>"""
+                } else {
+                    xmlText = ""
+                }
             ]]></script>
         </actions>
     </service>
+
+    <!-- ===================================================================== -->
+    <!-- SAVE SCREEN XML BACK TO DISK                                          -->
+    <!-- ===================================================================== -->
+    <service verb="save" noun="ScreenXml" type="inline">
+        <description>Compiles the Meta-JSON blueprint layout tree back into standard Moqui XML and writes it cleanly formatted to disk.</description>
+        <in-parameters>
+            <parameter name="artifactUri" type="String" required="true"/>
+            <parameter name="metaJsonBuffer" type="String" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="status" type="String"/>
+            <parameter name="savedFilePath" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import groovy.json.JsonSlurper
+                import groovy.xml.XmlUtil
+                import groovy.xml.XmlParser
+
+                // 1. Resolve physical file path from component:// location
+                org.moqui.resource.ResourceReference rr = ec.resource.getLocationReference(artifactUri)
+                if (rr == null || !rr.exists) {
+                    ec.logger.error("❌ Cannot write XML file: ResourceLocation ${artifactUri} does not exist.")
+                    context.status = "FILE_NOT_FOUND"
+                    return
+                }
+
+                // 2. Parse Meta-JSON
+                Map layoutTree = new JsonSlurper().parseText(metaJsonBuffer) as Map
+
+                // 3. Compile Meta-JSON tree back to XML using template compiler
+                Map compileResult = ec.service.sync().name("org.moqui.ai.AgiWorkspaceServices.compile#TreeToXml")
+                    .parameter("layoutTree", layoutTree)
+                    .call()
+
+                String rawXml = compileResult.xmlText
+
+                if (rawXml && rawXml.trim().length() > 0) {
+                    String prettyXml = rawXml
+                    try {
+                        // 4. Pretty-Print & Format XML Structure
+                        def parsedXml = new XmlParser(false, false).parseText(rawXml)
+                        prettyXml = XmlUtil.serialize(parsedXml)
+                    } catch (Exception formatEx) {
+                        ec.logger.warn("⚠️ Could not pretty-print XML, writing raw output instead: ${formatEx.message}")
+                    }
+
+                    // 5. Overwrite physical file on disk
+                    rr.putText(prettyXml)
+                    ec.logger.info("💾 [save#ScreenXml] Successfully written formatted XML to file: ${rr.getUrl()}")
+                    context.status = "SUCCESS"
+                    context.savedFilePath = rr.getUrl()
+                } else {
+                    ec.logger.error("❌ XML Compilation generated an empty output. Save aborted to prevent file corruption.")
+                    context.status = "COMPILATION_ERROR"
+                }
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- PARSE XML SCREEN FILE TO META-JSON TREE                                -->
+    <!-- ===================================================================== -->
+    <service verb="parse" noun="XmlToTree" type="inline">
+        <description>Renders a Moqui XML screen file off disk into native QMETA Meta-JSON AST using DefaultScreenMacros.qmeta.ftl.</description>
+        <in-parameters>
+            <parameter name="artifactUri" type="String" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="layoutTree" type="Object"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import groovy.json.JsonSlurper
+
+                try {
+                    // Force lastStandalone("-1") so DefaultScreenMacros.qmeta.ftl returns pure JSON AST
+                    String qmetaOutput = ec.screen.makeRender()
+                        .rootScreen(artifactUri)
+                        .renderMode("qmeta")
+                        .macroTemplate("component://agi-ai/template/screen-macro/DefaultScreenMacros.qmeta.ftl")
+                        .lastStandalone("-1")
+                        .render()
+
+                    if (qmetaOutput && qmetaOutput.trim().length() > 0) {
+                        context.layoutTree = new JsonSlurper().parseText(qmetaOutput.trim())
+                        ec.logger.info("✅ [parse#XmlToTree] Successfully compiled native QMETA AST for: ${artifactUri}")
+                    } else {
+                        ec.logger.error("❌ [parse#XmlToTree] QMETA rendering produced empty output for: ${artifactUri}")
+                    }
+                } catch (Exception e) {
+                    ec.logger.error("❌ [parse#XmlToTree] Error executing QMETA screen render for ${artifactUri}", e)
+                    throw e
+                }
+            ]]></script>
+        </actions>
+    </service>
+
 </services>

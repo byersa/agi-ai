@@ -759,6 +759,20 @@ window.AgiComponents['m-tree-item'] = {
    7. FORM AND INPUT FIELD WIDGET IMPLEMENTATIONS
    ========================================================================== */
 
+window.AgiComponents['FormField'] = {
+    name: 'FormField',
+    props: {
+        name: String,
+        title: String
+    },
+    template: `
+        <div class="q-my-xs full-width form-field-wrapper">
+            <div v-if="title" class="text-caption text-weight-bold text-grey-8 q-mb-xs">{{ title }}</div>
+            <slot></slot>
+        </div>
+    `
+};
+
 window.AgiComponents['m-editable'] = {
     name: "mEditable",
     props: {
@@ -831,7 +845,18 @@ window.AgiComponents['m-checkbox-set'] = {
 window.AgiComponents['m-form'] = {
     name: "mForm",
     mixins: [moqui.checkboxSetMixin],
-    props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: 'POST' }, submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean, parentCheckboxSet: Object },
+    props: {
+        fieldsInitial: Object,
+        action: { type: String, required: false, default: '#' }, // 👈 Change required: true to false with a default
+        method: { type: String, default: 'POST' },
+        submitMessage: String,
+        submitReloadId: String,
+        submitHideId: String,
+        focusField: String,
+        noValidate: Boolean,
+        excludeEmptyFields: Boolean,
+        parentCheckboxSet: Object
+    },
     data() { return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null } },
     methods: {
         submitForm() { if (this.noValidate) { this.submitGo(); } else { var vm = this; this.$refs.qForm.validate().then(function (success) { if (success) vm.submitGo(); }); } },
@@ -1266,7 +1291,32 @@ window.AgiComponents['m-display'] = {
 
 window.AgiComponents['m-drop-down'] = {
     name: "mDropDown",
-    props: { modelValue: [Array, String], options: { type: Array, default: () => [] }, combo: Boolean, allowEmpty: Boolean, multiple: Boolean, requiredManualSelect: Boolean, submitOnSelect: Boolean, optionsUrl: String, optionsParameters: Object, optionsLoadInit: Boolean, serverSearch: Boolean, labelField: { type: String, default: 'label' }, valueField: { type: String, default: 'value' }, dependsOn: Object, dependsOptional: Boolean, form: String, fields: Object, tooltip: String, label: String, name: String, id: String, disable: Boolean, bgColor: String, onSelectGoTo: String },
+    props: {
+        modelValue: [Array, String],
+        options: { type: Array, default: () => [] },
+        combo: Boolean,
+        allowEmpty: { type: [Boolean, String], default: true },
+        multiple: Boolean,
+        requiredManualSelect: Boolean,
+        submitOnSelect: Boolean,
+        optionsUrl: String,
+        optionsParameters: Object,
+        optionsLoadInit: Boolean,
+        serverSearch: Boolean,
+        labelField: { type: String, default: 'label' },
+        valueField: { type: String, default: 'value' },
+        dependsOn: Object,
+        dependsOptional: Boolean,
+        form: String,
+        fields: Object,
+        tooltip: String,
+        label: String,
+        name: String,
+        id: String,
+        disable: Boolean,
+        bgColor: String,
+        onSelectGoTo: String
+    },
     data() { return { curOptions: this.options, allOptions: this.options, loading: false } },
     methods: {
         handleInput($event) {
