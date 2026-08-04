@@ -24,4 +24,113 @@
         </relationship>
     </entity>
 
+    <!-- ========================================================= -->
+    <!--  org.moqui.ai - AGI-IDE Artifact & Intent Schema           -->
+    <!-- ========================================================= -->
+
+    <!-- Primary Domain Entity: AgiArtifact -->
+    <entity entity-name="AgiArtifact" package="org.moqui.ai" table-name="AGI_ARTIFACT">
+        <field name="agiArtifactId" type="id" is-pk="true"/>
+        <field name="artifactPath" type="text-medium" required="true"/>
+        <field name="artifactTypeEnumId" type="id"/>
+        <field name="artifactStatusEnumId" type="id"/> <!-- AasDraft, AasInReview, AasVerified -->
+        <field name="fileChecksum" type="text-short"/>
+        <field name="lastDiskModified" type="date-time"/>
+        
+        <!-- Harness Telemetry Rollup Fields -->
+        <field name="totalIntentCount" type="number-integer"/>
+        <field name="completedIntentCount" type="number-integer"/>
+        <field name="completionPercentage" type="number-decimal"/>
+
+        <relationship type="one" title="ArtifactType" related="moqui.basic.Enumeration">
+            <key-map field-name="artifactTypeEnumId" related="enumId"/>
+        </relationship>
+        <relationship type="one" title="ArtifactStatus" related="moqui.basic.Enumeration">
+            <key-map field-name="artifactStatusEnumId" related="enumId"/>
+        </relationship>
+
+        <index name="AGI_ART_PATH" unique="true">
+            <index-field name="artifactPath"/>
+        </index>
+
+        <seed-data>
+            <!-- AGI Artifact Types -->
+            <moqui.basic.EnumerationType description="AGI Artifact Type" enumTypeId="AgiArtifactType"/>
+            <moqui.basic.Enumeration description="XML Screen" enumId="AatXmlScreen" enumTypeId="AgiArtifactType"/>
+            <moqui.basic.Enumeration description="QMETA Subtree" enumId="AatQmetaSubtree" enumTypeId="AgiArtifactType"/>
+            <moqui.basic.Enumeration description="Groovy Script" enumId="AatGroovyScript" enumTypeId="AgiArtifactType"/>
+            <moqui.basic.Enumeration description="Markdown Blueprint" enumId="AatBlueprintMd" enumTypeId="AgiArtifactType"/>
+
+            <!-- AGI Artifact Statuses -->
+            <moqui.basic.EnumerationType description="AGI Artifact Status" enumTypeId="AgiArtifactStatus"/>
+            <moqui.basic.Enumeration description="Draft" enumId="AasDraft" enumTypeId="AgiArtifactStatus"/>
+            <moqui.basic.Enumeration description="In Review" enumId="AasInReview" enumTypeId="AgiArtifactStatus"/>
+            <moqui.basic.Enumeration description="Verified" enumId="AasVerified" enumTypeId="AgiArtifactStatus"/>
+
+            <!-- Work Effort Facet Types -->
+            <moqui.basic.EnumerationType description="Work Effort Facet Type" enumTypeId="WorkEffortFacetType"/>
+            <moqui.basic.Enumeration description="QMETA AST Snapshot" enumId="WeftQmetaAst" enumTypeId="WorkEffortFacetType"/>
+            <moqui.basic.Enumeration description="HIPAA Security Rule" enumId="WeftHipaaRule" enumTypeId="WorkEffortFacetType"/>
+            <moqui.basic.Enumeration description="Prompt / AI Intent" enumId="WeftAiPrompt" enumTypeId="WorkEffortFacetType"/>
+            <moqui.basic.Enumeration description="Meeting Transcript Snippet" enumId="WeftTranscript" enumTypeId="WorkEffortFacetType"/>
+            <!-- Work Effort Types for AGI Blueprint Hierarchy -->
+            <moqui.basic.EnumerationType description="Work Effort Type" enumTypeId="WorkEffortType"/>
+            <moqui.basic.Enumeration description="Intent / Goal" enumId="WetIntent" enumTypeId="WorkEffortType"/>
+            <moqui.basic.Enumeration description="Discussion / Topic" enumId="WetDiscussion" enumTypeId="WorkEffortType"/>
+            <moqui.basic.Enumeration description="Action / Implementation" enumId="WetAction" enumTypeId="WorkEffortType"/>
+        </seed-data>
+
+    </entity>
+
+    <entity entity-name="AgiArtifactWorkEffort" package="org.moqui.ai" table-name="AGI_ARTIFACT_WORK_EFFORT">
+        <field name="agiArtifactId" type="id" is-pk="true"/>
+        <field name="workEffortId" type="id" is-pk="true"/>
+        <field name="assocTypeEnumId" type="id"/> <!-- e.g. AweaPrimary, AweaCrossReference -->
+
+        <relationship type="one" related="org.moqui.ai.AgiArtifact"/>
+        <relationship type="one" related="mantle.work.effort.WorkEffort"/>
+    </entity>
+
+    <!-- Generic Facet Entity for Extensible Metadata & Vector IDs -->
+    <entity entity-name="WorkEffortFacet" package="org.moqui.ai" table-name="WORK_EFFORT_FACET">
+        <field name="workEffortFacetId" type="id" is-pk="true"/>
+        <field name="workEffortId" type="id" required="true"/>
+        <field name="facetTypeEnumId" type="id" required="true"/>
+        <field name="facetKey" type="text-medium" required="true"/>
+        <field name="facetValue" type="text-very-long"/>
+        <field name="vectorEmbeddingId" type="id"/>
+
+        <relationship type="one" related="mantle.work.effort.WorkEffort"/>
+        <relationship type="one" title="FacetType" related="moqui.basic.Enumeration">
+            <key-map field-name="facetTypeEnumId" related="enumId"/>
+        </relationship>
+
+        <index name="WE_FACET_WEID">
+            <index-field name="workEffortId"/>
+        </index>
+    </entity>
+
+    <!-- ========================================================= -->
+    <!-- EXTEND mantle.work.effort.WorkEffort                      -->
+    <!-- Uses <extend-entity> to preserve Mantle fields/relations  -->
+    <!-- ========================================================= -->
+    <extend-entity entity-name="WorkEffort" package="mantle.work.effort">
+        <!-- Harness Extensions -->
+        <field name="agiArtifactId" type="id"/>
+        <field name="targetMariaId" type="text-medium"/> <!-- Direct pointer to canvas element -->
+        <field name="revisionNumber" type="text-short"/>
+        <field name="completionPercentage" type="number-decimal"/>
+        <field name="openChildCount" type="number-integer"/>
+        <field name="completedChildCount" type="number-integer"/>
+
+        <relationship type="one" related="org.moqui.ai.AgiArtifact"/>
+
+        <index name="WE_AGI_ART_IDX">
+            <index-field name="agiArtifactId"/>
+        </index>
+        <index name="WE_SRC_REF_IDX">
+            <index-field name="sourceReferenceId"/>
+        </index>
+    </extend-entity>
+
 </entities>

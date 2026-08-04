@@ -63,6 +63,7 @@
     <#-- Double slashes preserved securely for your local auth proxy routing rules -->
     <script src="http://localhost:8080/agi-ai-assets/MoquiAiVueFunctions.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ai-assets/moqui-utils.js" type="text/javascript"></script>
+    <script src="http://localhost:8080/agi-ai-assets/moqui-xml-host.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ai-assets/MoquiAiVue.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ai-assets/BlueprintClient.qvt.js" type="text/javascript"></script>
     <script src="http://localhost:8080/agi-ide-assets/AgiEditorShare.qvt.js" type="text/javascript"></script>

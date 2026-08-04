@@ -358,10 +358,14 @@ ${rawTreeText}    </widgets>
     <!-- ===================================================================== -->
     <!-- PARSE XML SCREEN FILE TO META-JSON TREE                                -->
     <!-- ===================================================================== -->
+<!-- ===================================================================== -->
+    <!-- PARSE XML SCREEN FILE TO META-JSON TREE                                -->
+    <!-- ===================================================================== -->
     <service verb="parse" noun="XmlToTree" type="inline">
-        <description>Renders a Moqui XML screen file off disk into native QMETA Meta-JSON AST using DefaultScreenMacros.qmeta.ftl.</description>
+        <description>Renders a Moqui XML screen file off disk into native QMETA Meta-JSON AST using DefaultScreenMacros.qmeta.ftl and stamps canonical mariaIds.</description>
         <in-parameters>
             <parameter name="artifactUri" type="String" required="true"/>
+            <parameter name="versionTag" type="String" default-value="v1.0.0"/>
         </in-parameters>
         <out-parameters>
             <parameter name="layoutTree" type="Object"/>
@@ -369,9 +373,54 @@ ${rawTreeText}    </widgets>
         <actions>
             <script><![CDATA[
                 import groovy.json.JsonSlurper
+                import java.security.MessageDigest
+
+                // Deterministic MD5 Fallback Hash Generator
+                def generateFallbackId = { String uri, String xpath ->
+                    String raw = "${uri}#${xpath}"
+                    MessageDigest md = MessageDigest.getInstance("MD5")
+                    byte[] digest = md.digest(raw.getBytes("UTF-8"))
+                    String hex = digest.encodeHex().toString().substring(0, 12)
+                    return "maria_${hex}"
+                }
+
+                // Recursive AST Traversal & mariaId Stamping Helper
+                def enrichAstNodes
+                enrichAstNodes = { Map node, String currentPath, int childIdx ->
+                    if (!node) return
+
+                    String tagName = (node.tagName ?: node.type ?: node['@type'] ?: "node").toString().replaceAll("^@", "")
+                    String explicitId = node.id ?: node.name ?: node.attributes?.name ?: node.attributes?.id
+                    
+                    String elementPath = "${currentPath}/${tagName}[${childIdx}]"
+                    if (explicitId) {
+                        elementPath += "@${explicitId}"
+                    }
+
+                    // Assign canonical mariaId if missing or un-stamped
+                    if (!node.mariaId) {
+                        if (explicitId) {
+                            node.mariaId = "maria_${explicitId.replaceAll('[^a-zA-Z0-9_]', '_')}"
+                        } else {
+                            node.mariaId = generateFallbackId(artifactUri, elementPath)
+                        }
+                    }
+
+                    // Recursively process children and widgets arrays
+                    List childrenList = []
+                    if (node.children instanceof List) childrenList.addAll(node.children)
+                    if (node.widgets instanceof List) childrenList.addAll(node.widgets)
+
+                    int idx = 0
+                    childrenList.each { Object child ->
+                        if (child instanceof Map) {
+                            enrichAstNodes((Map) child, elementPath, idx++)
+                        }
+                    }
+                }
 
                 try {
-                    // Force lastStandalone("-1") so DefaultScreenMacros.qmeta.ftl returns pure JSON AST
+                    // 1. Force lastStandalone("-1") so DefaultScreenMacros.qmeta.ftl returns pure JSON AST
                     String qmetaOutput = ec.screen.makeRender()
                         .rootScreen(artifactUri)
                         .renderMode("qmeta")
@@ -380,13 +429,35 @@ ${rawTreeText}    </widgets>
                         .render()
 
                     if (qmetaOutput && qmetaOutput.trim().length() > 0) {
-                        context.layoutTree = new JsonSlurper().parseText(qmetaOutput.trim())
-                        ec.logger.info("✅ [parse#XmlToTree] Successfully compiled native QMETA AST for: ${artifactUri}")
+                        Map rawTree = new JsonSlurper().parseText(qmetaOutput.trim()) as Map
+
+                        // 2. Enrich AST with canonical & fallback mariaIds
+                        enrichAstNodes(rawTree, "", 0)
+
+                        // 3. Register or Sync Artifact Record in AgiArtifact table
+                        def artifactValue = ec.entity.find("org.moqui.ai.AgiArtifact")
+                            .condition("artifactPath", artifactUri)
+                            .one()
+                        if (!artifactValue) {
+                            artifactValue = ec.entity.makeValue("org.moqui.ai.AgiArtifact")
+                            artifactValue.artifactPath = artifactUri
+                            artifactValue.artifactTypeEnumId = "AatXmlScreen"
+                            artifactValue.lastDiskModified = ec.user.nowTimestamp
+                            artifactValue.setSequencedIdPrimary()
+                            artifactValue.create()
+                            ec.logger.info(" Registered new AgiArtifact [${artifactValue.agiArtifactId}] for: ${artifactUri}")
+                        } else {
+                            artifactValue.lastDiskModified = ec.user.nowTimestamp
+                            artifactValue.update()
+                        }
+
+                        context.layoutTree = rawTree
+                        ec.logger.info(" [parse#XmlToTree] Successfully compiled and stamped QMETA AST for: ${artifactUri}")
                     } else {
-                        ec.logger.error("❌ [parse#XmlToTree] QMETA rendering produced empty output for: ${artifactUri}")
+                        ec.logger.error(" [parse#XmlToTree] QMETA rendering produced empty output for: ${artifactUri}")
                     }
                 } catch (Exception e) {
-                    ec.logger.error("❌ [parse#XmlToTree] Error executing QMETA screen render for ${artifactUri}", e)
+                    ec.logger.error(" [parse#XmlToTree] Error executing QMETA screen render for ${artifactUri}", e)
                     throw e
                 }
             ]]></script>

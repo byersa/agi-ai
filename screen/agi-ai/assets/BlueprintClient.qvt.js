@@ -45,10 +45,11 @@
             const ideMode = Vue.inject('ideMode', Vue.ref('screen'));
             const userInput = Vue.inject('userInput', null);
 
-            const palettePosition = Vue.ref({ top: 120, left: window.innerWidth - 650 });
+            const palettePosition = Vue.ref({ top: 120, left: (window.innerWidth || 1024) - 650 });
             const handlePan = (details) => {
-                palettePosition.value.top += details.delta.y;
-                palettePosition.value.left += details.delta.x;
+                if (!details || !details.delta) return; // 🎯 Guard against null/undefined touch-pan details
+                palettePosition.value.top += (details.delta.y || 0);
+                palettePosition.value.left += (details.delta.x || 0);
             };
 
             const uiRegistry = Vue.ref({ categories: [] });
