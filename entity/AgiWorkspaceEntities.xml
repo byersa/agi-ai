@@ -56,6 +56,7 @@
         <seed-data>
             <!-- AGI Artifact Types -->
             <moqui.basic.EnumerationType description="AGI Artifact Type" enumTypeId="AgiArtifactType"/>
+            <moqui.basic.Enumeration description="Moqui Component" enumId="AatMoquiComp" enumTypeId="AgiArtifactType"/>
             <moqui.basic.Enumeration description="XML Screen" enumId="AatXmlScreen" enumTypeId="AgiArtifactType"/>
             <moqui.basic.Enumeration description="QMETA Subtree" enumId="AatQmetaSubtree" enumTypeId="AgiArtifactType"/>
             <moqui.basic.Enumeration description="Groovy Script" enumId="AatGroovyScript" enumTypeId="AgiArtifactType"/>
