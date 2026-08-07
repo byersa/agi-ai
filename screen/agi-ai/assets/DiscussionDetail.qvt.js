@@ -3,54 +3,56 @@
         name: 'DiscussionDetail',
         template: `
             <div class="discussion-detail-container q-pa-sm border-dashed rounded-borders bg-grey-1">
+                <!-- Header Bar with Collapsible Toggle -->
                 <div class="row items-center justify-between q-mb-xs q-px-xs">
                     <span class="text-caption text-weight-bold text-grey-7 font-mono">
-                        SPECIFICATION DETAIL [{{ node?.workEffortId || 'NEW' }}]
+                        SPECIFICATION DETAIL [{{ node?.workEffortId || 'DRAFT' }}]
                     </span>
+                    <!-- 🎯 Toggle Collapse/Expand Button -->
+                    <q-btn 
+                        flat 
+                        dense 
+                        round 
+                        size="xs" 
+                        :icon="isCollapsed ? 'expand_more' : 'expand_less'" 
+                        color="grey-7" 
+                        @click="isCollapsed = !isCollapsed"
+                    >
+                        <q-tooltip>{{ isCollapsed ? 'Expand Detail' : 'Collapse Detail' }}</q-tooltip>
+                    </q-btn>
                 </div>
 
-                <!-- 🎯 Slot Host: Renders custom inline Vue components directly -->
-                <slot :node="node">
-                    <!-- Default Fallback: External Vue Component Reference -->
-                    <component 
-                        v-if="component" 
-                        :is="component" 
-                        :node="node" 
-                    />
-
-                    <!-- Default Fallback: Moqui XML Host -->
-                    <moqui-xml-host 
-                        v-else-if="xml" 
-                        :xml="xml" 
-                        :context="node" 
-                    />
-
-                    <!-- Ultimate Fallback: Registered AgiWorkEffortDetail Component -->
-                    <agi-work-effort-detail 
-                        v-else 
-                        :node="node" 
-                    />
-                </slot>
+                <!-- Collapsible Container Body -->
+                <q-slide-transition>
+                    <div v-show="!isCollapsed">
+                        <slot :node="node">
+                            <agi-intent-detail :node="node" />
+                        </slot>
+                    </div>
+                </q-slide-transition>
             </div>
         `,
         props: {
-            node: { type: Object, required: true },
-            component: { type: String, default: null },
-            xml: { type: String, default: null }
+            node: { type: Object, required: true }
+        },
+        data() {
+            return {
+                isCollapsed: false
+            };
         }
     };
 
     window.DiscussionDetail = DiscussionDetail;
-    window.AgiComponents = window.AgiComponents || {};
+    if (!window.AgiComponents) window.AgiComponents = {};
     window.AgiComponents['discussion-detail'] = DiscussionDetail;
 
-    const registerDiscussionDetail = () => {
+    const registerComp = () => {
         if (window.moqui && window.moqui.webrootVueApp) {
             window.moqui.webrootVueApp.component('discussion-detail', DiscussionDetail);
             window.moqui.webrootVueApp.component('DiscussionDetail', DiscussionDetail);
         } else {
-            setTimeout(registerDiscussionDetail, 50);
+            setTimeout(registerComp, 50);
         }
     };
-    registerDiscussionDetail();
+    registerComp();
 })();

@@ -39,4 +39,11 @@
             <param name="metaJsonBuffer" type="String" required="true"/>
         </method>
     </resource>
+    <resource name="mcp">
+        <resource name="run">
+            <method type="post">
+                <service name="org.moqui.ai.AgiMcpBridgeServices.run#Tool"/>
+            </method>
+        </resource>
+    </resource>
 </resource>
