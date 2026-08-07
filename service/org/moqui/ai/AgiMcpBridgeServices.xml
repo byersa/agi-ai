@@ -113,7 +113,8 @@
                         def sd = serviceFacade.getServiceDefinition(serviceName)
                         if (sd != null) {
                             def parts = serviceName.split("\\.")
-                            def cleanMethodName = parts[parts.length - 1].replace("#", "_").toLowerCase()
+                            def rawName = parts[parts.length - 1].replace("#", "_")
+                            def cleanMethodName = rawName.replaceAll("([a-z])([A-Z])", '$1_$2').toLowerCase()
                             
                             def description = sd.serviceNode.attribute("description") ?: sd.serviceNode.first("description")?.getText() ?: "MCP tool for ${serviceName}"
                             
@@ -121,34 +122,41 @@
                             Map propertiesMap = [:]
                             List requiredList = []
 
+                            // Inside AgiMcpBridgeServices.xml / list#Tools
                             sd.inParameterNameList.each { paramName ->
                                 def paramInfo = sd.inParameterInfoMap.get(paramName)
                                 if (paramInfo != null) {
                                     def paramNode = paramInfo.parameterNode
                                     boolean isInternal = paramNode.attribute("internal") == "true" || paramNode.attribute("scope") == "context"
-                                    def paramDesc = paramInfo.parameterNode.attribute("description") ?: paramInfo.parameterNode.first("description")?.getText() ?: paramName
-                                    def paramType = "string"
-                                    if (paramInfo.parmClass != null) {
-                                        String sName = paramInfo.parmClass.simpleName.toLowerCase()
-                                        if (sName.contains("int") || sName.contains("long")) paramType = "integer"
-                                        else if (sName.contains("bool")) paramType = "boolean"
-                                    }
-
-                                    propertiesMap[paramName] = [
-                                        type: paramType,
-                                        description: paramDesc,
-                                        internal: isInternal
-                                    ]
-
-                                    if (paramInfo.parameterNode.attribute("required") == "true") {
-                                        requiredList.add(paramName)
+                                    
+                                    // Skip internal context variables so Gemini doesn't get confused
+                                    if (!isInternal) {
+                                        def paramDesc = paramNode.attribute("description") ?: paramNode.first("description")?.getText() ?: paramName
+                                        def paramType = "string"
+                                        if (paramInfo.parmClass != null) {
+                                            String sName = paramInfo.parmClass.simpleName.toLowerCase()
+                                            if (sName.contains("int") || sName.contains("long")) paramType = "integer"
+                                            else if (sName.contains("bool")) paramType = "boolean"
+                                            else if (sName.contains("list") || sName.contains("set")) paramType = "array"
+                                            else if (sName.contains("map")) paramType = "object"
+                                        }
+                            
+                                        propertiesMap[paramName] = [
+                                            type: paramType,
+                                            description: paramDesc
+                                        ]
+                            
+                                        if (paramNode.attribute("required") == "true") {
+                                            requiredList.add(paramName)
+                                        }
                                     }
                                 }
                             }
 
                             toolMap[cleanMethodName] = [
-                                name: cleanMethodName,
-                                serviceName: serviceName, // e.g. "org.moqui.ai.mcp.ScreenServices.create#Screen"
+                                name: cleanMethodName, // e.g. "attach_qvt_asset"
+                                command: "/" + cleanMethodName.replace("_", "-"), // e.g. "/attach-qvt-asset"
+                                serviceName: serviceName, // e.g. "org.moqui.ai.mcp.MCPScreenServices.attach#QvtAsset"
                                 title: cleanMethodName.replace("_", " ").capitalize(),
                                 description: description,
                                 inputSchema: [
