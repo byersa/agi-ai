@@ -2,106 +2,16 @@
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
 
-<service verb="load" noun="DynamicTools" authenticate="anonymous-all">
-        <description>Programmatically discover services in package org.moqui.ide.mcp and return them as Google ADK-compatible FunctionTool definitions.</description>
-        <out-parameters>
-            <parameter name="toolsList" type="List"><description>List of FunctionTool instances</description></parameter>
-        </out-parameters>
-        <actions>
-            <script><![CDATA[
-                def serviceFacade = ec.factory.serviceFacade
-                def knownServices = serviceFacade.getKnownServiceNames()
-                def matchingServices = []
-                for (name in knownServices) {
-                    if (name.startsWith("org.moqui.ai.mcp.")) {
-                        matchingServices.add(name)
-                    }
-                }
-                ec.logger.info("In load#DynamicTools, matchingServices: " + matchingServices.toString())
-
-                StringBuilder sb = new StringBuilder()
-                sb.append("package org.moqui.ai\n\n")
-                sb.append("import com.google.adk.tools.Annotations.Schema\n\n")
-                sb.append("class DynamicMcpTools {\n")
-
-                def methodServiceMap = [:]
-                matchingServices.each { serviceName ->
-                    def sd = serviceFacade.getServiceDefinition(serviceName)
-                ec.logger.info("In load#DynamicTools, sd: " + sd.toString())
-                    if (sd != null) {
-                        // 🎯 FIX: Extract a clean, short method name (e.g., "add_formfield") 
-                        // so the method name matches what we want Gemini to see as the tool name
-                        def parts = serviceName.split("\\.")
-                        def cleanMethodName = parts[parts.length - 1].replace("#", "_").toLowerCase()
-                        
-                        methodServiceMap[cleanMethodName] = serviceName
-                        
-                        def description = sd.serviceNode.attribute("description") ?: sd.serviceNode.first("description")?.getText() ?: "MCP tool for ${serviceName}"
-                        def cleanDesc = description.replace('"', '\\"').replace('\n', ' ')
-                        
-                        sb.append("    @Schema(description = \"${cleanDesc}\")\n")
-                        sb.append("    public Map ${cleanMethodName}(\n")
-                        
-                        def inParams = sd.inParameterNameList
-                        def paramListStr = []
-                        inParams.each { paramName ->
-                            def paramInfo = sd.inParameterInfoMap.get(paramName)
-                            def paramDesc = paramInfo.parameterNode.attribute("description") ?: paramInfo.parameterNode.first("description")?.getText() ?: paramName
-                            def paramType = "String"
-                            if (paramInfo.parmClass != null) {
-                                paramType = paramInfo.parmClass.simpleName
-                            }
-                            
-                            def cleanParamDesc = paramDesc.replace('"', '\\"').replace('\n', ' ')
-                            paramListStr.add("        @Schema(name = \"${paramName}\", description = \"${cleanParamDesc}\") ${paramType} ${paramName}")
-                        }
-                        sb.append(paramListStr.join(",\n"))
-                        sb.append("\n    ) {\n")
-                        
-                        sb.append("        def args = [:]\n")
-                        inParams.each { paramName ->
-                            sb.append("        if (${paramName} != null) args.${paramName} = ${paramName}\n")
-                        }
-                        sb.append("        return org.moqui.Moqui.getExecutionContext().service.sync().name(\"${serviceName}\").parameters(args).call()\n")
-                        sb.append("    }\n\n")
-                    }
-                }
-                sb.append("}\n")
-
-                ec.logger.info("In load#DynamicTools, sb: " + sb.toString())
-
-                ClassLoader parentClassLoader = Thread.currentThread().getContextClassLoader()
-                GroovyClassLoader gcl = new GroovyClassLoader(parentClassLoader)
-                Class<?> clazz = gcl.parseClass(sb.toString())
-                def instance = clazz.getDeclaredConstructor().newInstance()
-
-                def toolsList = []
-                methodServiceMap.keySet().each { cleanMethodName ->
-                    try {
-                        // 🎯 FIX: Reverted to the correct two-parameter factory method signature supported by the ADK
-                        def tool = com.google.adk.tools.FunctionTool.create(instance, cleanMethodName)
-                        toolsList.add(tool)
-                    } catch (Exception e) {
-                        ec.logger.error("Failed to register dynamic tool ${cleanMethodName}: " + e.getMessage(), e)
-                    }
-                }
-                context.toolsList = toolsList
-            ]]></script>
-        </actions>
-    </service>
-
     <!-- ===================================================================== -->
-    <!-- LIST ACTIVE MCP TOOLS                                                 -->
+    <!-- LIST ACTIVE MCP TOOLS (Pure Moqui / JSON Schema - Strict Contract)    -->
     <!-- ===================================================================== -->
     <service verb="list" noun="Tools" authenticate="anonymous-all">
-        <description>Queries live dynamic MCP services and the ADK LlmAgent registry to serve all available tools.</description>
+        <description>Queries live dynamic MCP services and serves formatted JSON schemas for Gemini tool calling.</description>
         <out-parameters>
             <parameter name="tools" type="List"><description>List of formatted tool definitions for MCP compliance</description></parameter>
         </out-parameters>
         <actions>
             <script><![CDATA[
-                import org.moqui.adk.AdkManager
-
                 Map toolMap = [:]
 
                 // 1. DIRECT SERVICE INSPECTION FOR org.moqui.ai.mcp.* SERVICES
@@ -118,21 +28,19 @@
                             
                             def description = sd.serviceNode.attribute("description") ?: sd.serviceNode.first("description")?.getText() ?: "MCP tool for ${serviceName}"
                             
-                            // Build Input Schema from Service In-Parameters
                             Map propertiesMap = [:]
                             List requiredList = []
 
-                            // Inside AgiMcpBridgeServices.xml / list#Tools
                             sd.inParameterNameList.each { paramName ->
                                 def paramInfo = sd.inParameterInfoMap.get(paramName)
                                 if (paramInfo != null) {
                                     def paramNode = paramInfo.parameterNode
                                     boolean isInternal = paramNode.attribute("internal") == "true" || paramNode.attribute("scope") == "context"
                                     
-                                    // Skip internal context variables so Gemini doesn't get confused
                                     if (!isInternal) {
-                                        def paramDesc = paramNode.attribute("description") ?: paramNode.first("description")?.getText() ?: paramName
+                                        def rawDesc = paramNode.attribute("description") ?: paramNode.first("description")?.getText() ?: paramName
                                         def paramType = "string"
+                                        
                                         if (paramInfo.parmClass != null) {
                                             String sName = paramInfo.parmClass.simpleName.toLowerCase()
                                             if (sName.contains("int") || sName.contains("long")) paramType = "integer"
@@ -140,12 +48,19 @@
                                             else if (sName.contains("list") || sName.contains("set")) paramType = "array"
                                             else if (sName.contains("map")) paramType = "object"
                                         }
-                            
+
+                                        // 🎯 ENFORCE STRICT CANONICAL FORMAT GUIDANCE
+                                        String enhancedDesc = rawDesc
+                                        if (paramName.equalsIgnoreCase("artifactUri") || paramName.equalsIgnoreCase("targetScreenUri")) {
+                                            enhancedDesc += " (Required format: 'component://<componentName>/screen/<path>.xml')"
+                                        }
+
                                         propertiesMap[paramName] = [
                                             type: paramType,
-                                            description: paramDesc
+                                            description: enhancedDesc
                                         ]
-                            
+
+                                        // Ensure required attributes are strictly captured
                                         if (paramNode.attribute("required") == "true") {
                                             requiredList.add(paramName)
                                         }
@@ -153,12 +68,13 @@
                                 }
                             }
 
+                            // Build rigid, explicit JSON schema definition
                             toolMap[cleanMethodName] = [
-                                name: cleanMethodName, // e.g. "attach_qvt_asset"
-                                command: "/" + cleanMethodName.replace("_", "-"), // e.g. "/attach-qvt-asset"
-                                serviceName: serviceName, // e.g. "org.moqui.ai.mcp.MCPScreenServices.attach#QvtAsset"
+                                name: cleanMethodName,
+                                command: "/" + cleanMethodName.replace("_", "-"),
+                                serviceName: serviceName,
                                 title: cleanMethodName.replace("_", " ").capitalize(),
-                                description: description,
+                                description: description.trim() + " NOTE: Pass exact parameter names matching the schema. Execute once per atomic item.",
                                 inputSchema: [
                                     type: "object",
                                     properties: propertiesMap,
@@ -169,49 +85,27 @@
                     }
                 }
 
-                // 2. Query AdkManager active agent for additional built-in tools / toolsets
+                // 2. OPTIONAL: QUERY moqui-mcp CATALOG
                 try {
-                    def activeAgent = AdkManager.agentRegistry?.get(AdkManager.DEFAULT_CONFIG)
+                    def mcpRes = ec.service.sync().name("McpServices.list#Tools").call()
+                    def mcpToolsList = mcpRes?.result?.tools ?: mcpRes?.tools ?: []
                 
-                    if (activeAgent != null) {
-                        def rawToolsObj = activeAgent.tools()
-                        List resolvedTools = []
-                
-                        if (rawToolsObj != null) {
-                            if (rawToolsObj.metaClass.respondsTo(rawToolsObj, "blockingGet")) {
-                                resolvedTools = rawToolsObj.blockingGet() as List
-                            } else if (rawToolsObj.metaClass.respondsTo(rawToolsObj, "blockingFirst")) {
-                                resolvedTools = rawToolsObj.blockingFirst() as List
-                            } else if (rawToolsObj instanceof List) {
-                                resolvedTools = rawToolsObj
-                            }
-                        }
-                
-                        resolvedTools.each { tool ->
-                            try {
-                                // 🎯 Safe ADK Tool Name Resolution
-                                String tName = null
-                                try { tName = tool.getName() } catch (Throwable ignored) { tName = tool.name }
-                                
-                                // If it evaluated to a class string or memory reference, filter it out or sanitize
-                                if (tName && !tName.startsWith("com.google.adk") && !tName.contains("@")) {
-                                    if (!toolMap.containsKey(tName)) {
-                                        String desc = "Agent Tool"
-                                        try { desc = tool.getDescription() } catch (Throwable ignored) {}
-                
-                                        toolMap[tName] = [
-                                            name: tName,
-                                            title: tName.replace("_", " ").capitalize(),
-                                            description: desc,
-                                            inputSchema: [:]
-                                        ]
-                                    }
-                                }
-                            } catch (Exception te) {}
+                    mcpToolsList.each { mcpTool ->
+                        String tName = mcpTool.name
+                        if (tName && !toolMap.containsKey(tName)) {
+                            toolMap[tName] = [
+                                name: tName,
+                                command: "/" + tName.replace("_", "-"),
+                                serviceName: "McpServices.mcp#ToolsCall",
+                                isMcpWrapper: true,
+                                title: tName.replace("_", " ").capitalize(),
+                                description: mcpTool.description ?: "moqui-mcp tool",
+                                inputSchema: mcpTool.inputSchema ?: [type: "object", properties: [:]]
+                            ]
                         }
                     }
                 } catch (Exception ex) {
-                    ec.logger.warn("⚠️ Error inspecting AdkManager agent tools: " + ex.message)
+                    ec.logger.warn("⚠️ Error inspecting McpServices.list#Tools catalog: " + ex.message)
                 }
 
                 context.tools = new ArrayList(toolMap.values())
@@ -219,19 +113,35 @@
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- RUN TOOL SERVICE                                                      -->
+    <!-- ===================================================================== -->
     <service verb="run" noun="Tool" authenticate="anonymous-all">
         <description>Dynamically executes an MCP tool service by name with provided parameter map.</description>
         <in-parameters>
             <parameter name="serviceName" required="true"/>
+            <parameter name="toolName"/>
             <parameter name="parameters" type="Map"/>
         </in-parameters>
         <actions>
             <script><![CDATA[
+                Map callParams = parameters ?: [:]
+
+                if (serviceName == "McpServices.mcp#ToolsCall") {
+                    String actualToolName = toolName ?: callParams.remove("toolName") ?: callParams.remove("name")
+                    Map result = ec.service.sync().name("McpServices.mcp#ToolsCall").parameters([
+                        name: actualToolName,
+                        arguments: callParams
+                    ]).call()
+                    context.putAll(result?.result ?: result ?: [:])
+                    return
+                }
+
                 if (!serviceName.startsWith("org.moqui.ai.mcp.")) {
                     ec.message.addError("Unauthorized service execution: " + serviceName)
                     return
                 }
-                Map callParams = parameters ?: [:]
+
                 Map result = ec.service.sync().name(serviceName).parameters(callParams).call()
                 context.putAll(result)
             ]]></script>
