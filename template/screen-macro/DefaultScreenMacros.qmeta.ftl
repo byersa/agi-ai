@@ -511,6 +511,7 @@
 </#macro>
 
 <#macro "text">
+<#local rawText><#recurse></#local>
 {
   "_moquiTag": "text",
   "@type": "m-text",
@@ -518,7 +519,7 @@
     "type": "${.node['@type']!}",
     "location": "${.node['@location']!}"
   },
-  "value": "${.node?text?json_string}"
+  "value": "${rawText?trim?json_string}"
 }
 </#macro>
 
