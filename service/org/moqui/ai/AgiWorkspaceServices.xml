@@ -358,9 +358,6 @@ ${rawTreeText}    </widgets>
     <!-- ===================================================================== -->
     <!-- PARSE XML SCREEN FILE TO META-JSON TREE                                -->
     <!-- ===================================================================== -->
-<!-- ===================================================================== -->
-    <!-- PARSE XML SCREEN FILE TO META-JSON TREE                                -->
-    <!-- ===================================================================== -->
     <service verb="parse" noun="XmlToTree" type="inline">
         <description>Renders a Moqui XML screen file off disk into native QMETA Meta-JSON AST using DefaultScreenMacros.qmeta.ftl and stamps canonical mariaIds.</description>
         <in-parameters>
@@ -460,6 +457,45 @@ ${rawTreeText}    </widgets>
                     ec.logger.error(" [parse#XmlToTree] Error executing QMETA screen render for ${artifactUri}", e)
                     throw e
                 }
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- GET KNOWN ARTIFACTS LIST                                              -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="KnownArtifacts" type="inline" authenticate="anonymous-all">
+        <description>Returns a list of all registered AgiArtifact records for the workspace palette.</description>
+        <out-parameters>
+            <parameter name="artifacts" type="List"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def artifactList = ec.entity.find("org.moqui.ai.AgiArtifact")
+                    .orderBy("artifactPath")
+                    .useCache(false)
+                    .list()
+
+                List resultList = []
+                artifactList.each { art ->
+                    String path = art.artifactPath
+                    String name = path ? path.substring(path.lastIndexOf('/') + 1) : "Artifact"
+                    resultList.add([
+                        agiArtifactId: art.agiArtifactId,
+                        artifactPath: path,
+                        screenName: name,
+                        artifactTypeEnumId: art.artifactTypeEnumId ?: "AatXmlScreen"
+                    ])
+                }
+
+                // If DB has no registered artifacts yet, seed default component screens dynamically
+                if (resultList.isEmpty()) {
+                    resultList.add([artifactPath: "component://nursinghome/screen/nursinghome.xml", screenName: "nursinghome.xml", artifactTypeEnumId: "AatXmlScreen"])
+                    resultList.add([artifactPath: "component://nursinghome/screen/nursinghome/PatientIntake.xml", screenName: "PatientIntake.xml", artifactTypeEnumId: "AatXmlScreen"])
+                    resultList.add([artifactPath: "component://agi-ide/screen/agi-ide.xml", screenName: "agi-ide.xml", artifactTypeEnumId: "AatXmlScreen"])
+                }
+
+                context.artifacts = resultList
             ]]></script>
         </actions>
     </service>
