@@ -1287,23 +1287,48 @@ window.AgiComponents['m-simple-mde'] = {
 
 window.AgiComponents['m-subscreens-tabs'] = {
     name: "mSubscreensTabs",
+    inject: {
+        nodeContext: { default: () => ({}) }
+    },
     props: { passedPathIndex: { type: [Number, String], default: -1 } },
     data() { return { pathIndex: -1 } },
     computed: {
-        subscreens() { if (this.pathIndex < 0 || !this.$root?.navMenuList) return []; return this.$root.navMenuList[this.pathIndex]?.subscreens || []; },
-        activeTab() { if (this.pathIndex < 0 || !this.$root?.navMenuList) return null; var activeName = null; $.each(this.$root.navMenuList[this.pathIndex]?.subscreens || [], function (idx, tab) { if (tab.active) activeName = tab.name; }); return activeName; }
+        subscreens() {
+            // 1. Check if subscreens were provided via AST context (Canvas Mode)
+            if (this.nodeContext?.subscreens?.children) {
+                return this.nodeContext.subscreens.children.map(item => ({
+                    name: item.name,
+                    title: item.menuTitle || item.name,
+                    pathWithParams: item.name,
+                    active: item.name === (this.nodeContext.currentPathList?.[0] || this.nodeContext.subscreens.defaultItem)
+                }));
+            }
+            // 2. Standard Moqui Runtime Fallback
+            if (this.pathIndex < 0 || !this.$root?.navMenuList) return [];
+            return this.$root.navMenuList[this.pathIndex]?.subscreens || [];
+        },
+        activeTab() {
+            const subs = this.subscreens;
+            const activeItem = subs.find(s => s.active);
+            return activeItem ? activeItem.name : (subs[0]?.name || null);
+        }
     },
-    methods: { goTo(path) { if (this.$root) this.$root.setUrl(this.$root.getLinkPath(path)); } },
+    methods: {
+        goTo(path) {
+            if (this.$root && this.$root.setUrl) this.$root.setUrl(this.$root.getLinkPath(path));
+        }
+    },
     mounted() {
-        if (this.passedPathIndex !== -1 && this.passedPathIndex !== undefined && this.passedPathIndex !== "-1") { this.pathIndex = parseInt(this.passedPathIndex); }
-        else {
+        if (this.passedPathIndex !== -1 && this.passedPathIndex !== undefined && this.passedPathIndex !== "-1") {
+            this.pathIndex = parseInt(this.passedPathIndex);
+        } else {
             let depth = -1, p = this.$parent;
             while (p) { if (p.$options?.name === 'mSubscreensActive' || p.activePathIndex !== undefined) { depth = p.activePathIndex; break; } p = p.$parent; }
             this.pathIndex = depth + 1;
         }
     },
     template: `
-        <div v-if="subscreens.length > 1">
+        <div v-if="subscreens.length > 0">
             <q-tabs dense no-caps align="left" active-color="primary" indicator-color="primary" :model-value="activeTab">
                 <q-tab v-for="tab in subscreens" :key="tab.name" :name="tab.name" :label="tab.title" :disable="tab.disableLink" @click.prevent="goTo(tab.pathWithParams)"></q-tab>
             </q-tabs><q-separator class="q-mb-md"></q-separator>
@@ -1315,6 +1340,14 @@ window.AgiComponents['m-subscreens-active'] = {
     name: "mSubscreensActive",
     props: { pathIndex: { type: [Number, String], default: -1 }, itemName: String },
     data() { return { activeComponent: Vue.markRaw(moqui.EmptyComponent), activePathIndex: -1, pathName: null } },
+    watch: {
+        '$root.currentPathList': {
+            deep: true,
+            handler() {
+                this.loadActive();
+            }
+        }
+    },
     methods: {
         loadActive() {
             var vm = this; var root = vm.$root; if (!root?.currentPathList) return false;

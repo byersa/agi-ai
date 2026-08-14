@@ -186,6 +186,12 @@
             node: { required: true },
             context: { type: Object, default: () => ({}) }
         },
+        provide() {
+            // 🎯 Expose context (currentPathList, subscreens, selectedMariaId) to all descendants
+            return {
+                nodeContext: this.context
+            };
+        },
         data() {
             return {
                 isResolved: false,
@@ -223,7 +229,23 @@
         render() {
             if (!this.node) return null;
 
+            // If the node itself is a raw string/number primitive, return raw text directly
+            if (typeof this.node === 'string' || typeof this.node === 'number') {
+                return this.node;
+            }
+
             let activeNode = Array.isArray(this.node) ? (this.node[0] || {}) : this.node;
+
+            // Un-wrap semantic <screen> envelope
+            if (activeNode._moquiTag === 'screen') {
+                const screenChildren = activeNode.children || activeNode.widgets || [];
+                return screenChildren.map(child => {
+                    return Vue.h(window.AgiComponents['m-blueprint-node'], {
+                        node: child,
+                        context: this.context
+                    });
+                });
+            }
 
             const isScreenWrapper = !activeNode['@type'] && Array.isArray(activeNode.widgets);
             let type = isScreenWrapper ? 'div' : (activeNode['@type'] || 'div');
@@ -233,16 +255,16 @@
             if (activeNode.title) propsMap.title = activeNode.title;
             if (activeNode.name && !propsMap.name) propsMap.name = activeNode.name;
             if (activeNode.id) propsMap.id = activeNode.id;
+            if (activeNode.mariaId) propsMap.mariaid = activeNode.mariaId;
+            if (activeNode.style) propsMap.style = activeNode.style;
 
             // 2. Normalize Quasar-specific component properties
             if (type === 'q-btn' || type === 'submit') {
                 type = 'q-btn';
-                // Resolve button text/label priority
                 propsMap.label = propsMap.label || propsMap.text || activeNode.title || 'Submit';
                 delete propsMap.text;
                 if (!propsMap.color) propsMap.color = 'primary';
             } else if (['q-input', 'q-select', 'q-textarea', 'm-text-line', 'm-drop-down'].includes(type)) {
-                // Ensure inputs receive Quasar's expected 'label' prop
                 propsMap.label = propsMap.label || propsMap.title || activeNode.title || '';
             }
 
@@ -258,15 +280,18 @@
                 }
             }
 
-            // 4. Recursively build child VNodes via Vue.h
+            // 4. Recursively build child VNodes (Handling text strings vs sub-nodes)
             const childrenRenderMap = childNodes.map(child => {
+                if (typeof child === 'string' || typeof child === 'number') {
+                    return child; // 🎯 Return string primitive directly to parent VNode slot!
+                }
                 return Vue.h(window.AgiComponents['m-blueprint-node'], {
                     node: child,
                     context: this.context
                 });
             });
 
-            // 5. Render active component passing the normalized props map
+            // 5. Render active component passing normalized props and slot children
             return Vue.h(componentDefinition, propsMap, {
                 default: () => childrenRenderMap
             });

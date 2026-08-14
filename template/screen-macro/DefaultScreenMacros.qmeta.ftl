@@ -14,7 +14,7 @@
 <#global qmetaElementCounter = 0>
 
 <#function getCleanPath>
-    <#local loc = sri.getActiveScreenDef().getLocation()>
+    <#local loc = (sri.activeScreenDef.location)!''>
     <#return loc?replace("^component://[^/]+/screen/", "", "r")?replace(".xml$", "", "r")>
 </#function>
 
@@ -29,7 +29,8 @@
 <#-- 2. CORE SCREEN INTERCEPTORS AND PAYLOAD ENVELOPE STRUCTURING -->
 <#macro screen>
 <#local screenName = getCleanPath()>
-<#if sri.getScreenUrlInfo().lastStandalone == 0>
+<#local lastStandalone = (sri.screenUrlInfo.lastStandalone)!0>
+<#if (lastStandalone == 0) && !(rawJsonOnly!false)>
 <!DOCTYPE html>
 <html>
 <head>
@@ -186,12 +187,34 @@
 </body>
 </html>
 <#else>
-<#-- 2. NESTED CHILD SUBSCREENS -->
+<#-- 2. NESTED CHILD SUBSCREENS & ROOT AST ENVELOPE -->
+<#local activeDef = sri.activeScreenDef!>
+<#local screenLoc = (activeDef.location)!'' >
+<#local defaultSub = (activeDef.defaultSubscreen)!'' >
+<#local subMap = (activeDef.subscreensByName)!{} >
 {
   "_moquiTag": "screen",
   "screen": "${getCleanPath()}",
-  "location": "${sri.getActiveScreenDef().getLocation()}",
-  "widgets": [<#recurse>]
+  "location": "${screenLoc}",
+  <#if subMap?has_content && (subMap?size > 0)>
+  "subscreens": {
+    "_moquiTag": "subscreens",
+    "defaultItem": "${defaultSub}",
+    "children": [
+      <#list subMap?keys as subKey>
+      <#local subItem = subMap[subKey]!>
+      {
+        "_moquiTag": "subscreens-item",
+        "@type": "m-subscreens-item",
+        "name": "${subItem.name!subKey}",
+        "location": "${subItem.location!}",
+        "menuTitle": "${subItem.menuTitle!subItem.name!subKey}"
+      }<#if subKey_has_next>,</#if>
+      </#list>
+    ]
+  },
+  </#if>
+  "children": [<@renderChildren parentNode=.node/>]
 }
 </#if>
 </#macro>
@@ -203,9 +226,11 @@
 <#macro "container">
 <#local containerClass = .node['@class']!''>
 <#local containerType = .node['@type']!'div'>
-<#local resolvedType = containerType>
-<#if containerClass?starts_with("agi-") || containerClass?starts_with("m-")>
+<#local resolvedType = "div">
+<#if containerClass?has_content>
   <#local resolvedType = containerClass>
+<#elseif containerType?has_content>
+  <#local resolvedType = containerType>
 </#if>
 {
   "_moquiTag": "container",
@@ -277,17 +302,13 @@
 <#-- ================ 4. HIGH-FIDELITY FORM CORE MAPPINGS ================ -->
 <#macro "form-single">
 <#local transitionName = .node['@transition']!''>
-<#local actionUrl = "#">
-<#if transitionName?has_content>
-  <#local actionUrl = (sri.buildUrl(transitionName).getTarget())!'#'>
-</#if>
 {
   "_moquiTag": "form-single",
   "@type": "m-form",
   "name": "${.node['@name']!}",
   "transition": "${transitionName}",
-  "action": "${actionUrl}",
-  "mariaId": "${sri.getActiveScreenDef().getLocation()}#${.node['@name']!}",
+  "action": "#",
+  "mariaId": "${getCleanPath()}#${.node['@name']!}",
   "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
@@ -370,7 +391,7 @@
   "_moquiTag": "link",
   "@type": "m-link",
   "text": "${.node['@text']!}",
-  "url": "${sri.buildUrl(.node['@url']!'.').getUrl()!}",
+  "url": "${.node['@url']!'.'}",
   "mariaId": "${getCleanPath()}#link-${qmetaElementCounter}"
 }
 </#macro>
@@ -484,18 +505,19 @@
 </#macro>
 
 <#macro "subscreens-all">
+<#local subMap = (sri.getActiveScreenDef().getSubscreensByName())!{}>
 {
   "_moquiTag": "subscreens-all",
   "@type": "m-subscreens-all",
   "id": "${.node['@id']!'subscreens-all'}",
   "subscreens": [
-    <#list sri.getActiveScreenDef().getSubscreensByName().values() as subscreenItem>
+    <#list subMap?keys as subKey>
+      <#local subItem = subMap[subKey]!>
       {
         "_moquiTag": "subscreens-item",
-        "name": "${subscreenItem.getName()}",
-        "componentName": "agi-${subscreenItem.getName()?lower_case?replace('_', '-')}",
-        "url": "${sri.getCurrentScreenUrl()}/${subscreenItem.getName()}"
-      }<#if subscreenItem_has_next>,</#if>
+        "name": "${subItem.name!subKey}",
+        "componentName": "agi-${(subItem.name!subKey)?lower_case?replace('_', '-')}"
+      }<#if subKey_has_next>,</#if>
     </#list>
   ]
 }
@@ -507,6 +529,28 @@
   "_moquiTag": "render-mode",
   "@type": "m-render-mode",
   "children": [<@renderChildren parentNode=.node/>]
+}
+</#macro>
+
+<#-- ================ SUBSCREEN CONTAINER & ITEM PRIMITIVES ================ -->
+<#macro "subscreens">
+{
+  "_moquiTag": "subscreens",
+  "@type": "m-subscreens",
+  "defaultItem": "${.node['@default-item']!}",
+  "children": [<@renderChildren parentNode=.node/>]
+}
+</#macro>
+
+<#macro "subscreens-item">
+<#global qmetaElementCounter = qmetaElementCounter + 1>
+{
+  "_moquiTag": "subscreens-item",
+  "@type": "m-subscreens-item",
+  "name": "${.node['@name']!}",
+  "location": "${.node['@location']!}",
+  "menuTitle": "${.node['@menu-title']!}",
+  "mariaId": "${getCleanPath()}#subscreen-item-${qmetaElementCounter}"
 }
 </#macro>
 
