@@ -74,6 +74,13 @@
             <moqui.basic.Enumeration description="HIPAA Security Rule" enumId="WeftHipaaRule" enumTypeId="WorkEffortFacetType"/>
             <moqui.basic.Enumeration description="Prompt / AI Intent" enumId="WeftAiPrompt" enumTypeId="WorkEffortFacetType"/>
             <moqui.basic.Enumeration description="Meeting Transcript Snippet" enumId="WeftTranscript" enumTypeId="WorkEffortFacetType"/>
+
+            <!-- Wiki Page Facet Types -->
+            <moqui.basic.EnumerationType description="Wiki Page Facet Type" enumTypeId="WikiPageFacetType"/>
+            <moqui.basic.Enumeration description="QMETA AST Snapshot" enumId="WpftQmetaAst" enumTypeId="WikiPageFacetType"/>
+            <moqui.basic.Enumeration description="HIPAA Security Rule" enumId="WpftHipaaRule" enumTypeId="WikiPageFacetType"/>
+            <moqui.basic.Enumeration description="Prompt / AI Intent" enumId="WpftAiPrompt" enumTypeId="WikiPageFacetType"/>
+            <moqui.basic.Enumeration description="Meeting Transcript Snippet" enumId="WpftTranscript" enumTypeId="WikiPageFacetType"/>
             <!-- Work Effort Types for AGI Blueprint Hierarchy -->
             <moqui.basic.EnumerationType description="Work Effort Type" enumTypeId="WorkEffortType"/>
             <moqui.basic.Enumeration description="Intent / Goal" enumId="WetIntent" enumTypeId="WorkEffortType"/>
@@ -92,6 +99,18 @@
         <relationship type="one" related="mantle.work.effort.WorkEffort"/>
     </entity>
 
+    <entity entity-name="AgiArtifactWikiPage" package="org.moqui.ai" table-name="AGI_ARTIFACT_WIKI_PAGE">
+        <field name="agiArtifactId" type="id" is-pk="true"/>
+        <field name="wikiPageId" type="id" is-pk="true"/>
+        <field name="assocTypeEnumId" type="id"/> <!-- AweaPrimary, AweaCrossReference -->
+
+        <relationship type="one" related="org.moqui.ai.AgiArtifact"/>
+        <relationship type="one" related="moqui.resource.wiki.WikiPage"/>
+        <relationship type="one" title="AssocType" related="moqui.basic.Enumeration">
+            <key-map field-name="assocTypeEnumId" related="enumId"/>
+        </relationship>
+    </entity>
+
     <!-- Generic Facet Entity for Extensible Metadata & Vector IDs -->
     <entity entity-name="WorkEffortFacet" package="org.moqui.ai" table-name="WORK_EFFORT_FACET">
         <field name="workEffortFacetId" type="id" is-pk="true"/>
@@ -108,6 +127,24 @@
 
         <index name="WE_FACET_WEID">
             <index-field name="workEffortId"/>
+        </index>
+    </entity>
+
+    <entity entity-name="WikiPageFacet" package="org.moqui.ai" table-name="WIKI_PAGE_FACET">
+        <field name="wikiPageFacetId" type="id" is-pk="true"/>
+        <field name="wikiPageId" type="id" required="true"/>
+        <field name="facetTypeEnumId" type="id" required="true"/>
+        <field name="facetKey" type="text-medium" required="true"/>
+        <field name="facetValue" type="text-very-long"/>
+        <field name="vectorEmbeddingId" type="id"/>
+
+        <relationship type="one" related="moqui.resource.wiki.WikiPage"/>
+        <relationship type="one" title="FacetType" related="moqui.basic.Enumeration">
+            <key-map field-name="facetTypeEnumId" related="enumId"/>
+        </relationship>
+
+        <index name="WP_FACET_WPID">
+            <index-field name="wikiPageId"/>
         </index>
     </entity>
 

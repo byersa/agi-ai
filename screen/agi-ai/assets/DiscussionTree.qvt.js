@@ -44,8 +44,8 @@
                     v-else
                     ref="qTreeRef"
                     :nodes="treeNodes"
-                    node-key="workEffortId"
-                    label-key="workEffortName"
+                    :node-key="'wikiPageId'"
+                    label-key="label"
                     default-expand-all
                     class="q-tree-custom"
                 >
@@ -53,7 +53,7 @@
                     <template v-slot:default-header="prop">
                         <div 
                             class="row items-center full-width q-pa-xs rounded-borders tree-node-row cursor-pointer"
-                            :class="{ 'bg-blue-1 text-primary text-weight-bold': selectedNodeId === prop.node.workEffortId }"
+                            :class="{ 'bg-blue-1 text-primary text-weight-bold': selectedNodeId === prop.node.wikiPageId }"
                             draggable="true"
                             @dragstart="handleDragStart($event, prop.node)"
                             @dragover.prevent="handleDragOver($event)"
@@ -62,17 +62,17 @@
                         >
                             <!-- Type Icon -->
                             <q-icon 
-                                :name="getNodeIcon(prop.node.workEffortTypeEnumId)" 
-                                :color="getNodeIconColor(prop.node.workEffortTypeEnumId)" 
+                                :name="getNodeIcon(prop.node.workEffortTypeEnumId || prop.node.wikiSpaceId)" 
+                                :color="getNodeIconColor(prop.node.workEffortTypeEnumId || prop.node.wikiSpaceId)" 
                                 size="18px"
                                 class="q-mr-xs" 
                             />
 
                             <!-- Title -->
                             <div class="col-grow text-body2 font-mono text-weight-medium row items-center">
-                                <span>{{ prop.node.workEffortName || 'Unnamed Node' }}</span>
-                                <span v-if="prop.node.revisionNumber" class="text-caption text-grey-6 q-ml-xs">
-                                    ({{ prop.node.revisionNumber }})
+                                <span>{{ prop.node.label || prop.node.pagePath || 'Unnamed Node' }}</span>
+                                <span v-if="prop.node.publishedVersionName || prop.node.revisionNumber" class="text-caption text-grey-6 q-ml-xs">
+                                    ({{ prop.node.publishedVersionName || prop.node.revisionNumber }})
                                 </span>
 
                                 <!-- targetMariaId Badge (Canvas Element Pointer) -->
@@ -89,7 +89,7 @@
                                 class="q-mr-xs"
                                 @update:model-value="toggleNodeStatus(prop.node)"
                             >
-                                <q-tooltip>Status: {{ prop.node.statusId || 'WeInPlanning' }}</q-tooltip>
+                                <q-tooltip>Status: {{ prop.node.statusId || 'Active' }}</q-tooltip>
                             </q-checkbox>
 
                             <!-- Action Toolbar -->
@@ -98,7 +98,7 @@
                                     <q-tooltip>Add Sub-Goal / Discussion</q-tooltip>
                                 </q-icon>
                                 <q-icon name="link" size="16px" color="secondary" class="q-hoverable" @click.stop="linkToAdditionalArtifact(prop.node)">
-                                    <q-tooltip>Link to Additional Artifact (Many-to-Many)</q-tooltip>
+                                    <q-tooltip>Link to Additional Artifact</q-tooltip>
                                 </q-icon>
                                 <q-icon name="content_copy" size="16px" class="q-hoverable" @click.stop="copyNodeJson(prop.node)">
                                     <q-tooltip>Copy Node JSON</q-tooltip>
@@ -113,11 +113,10 @@
                         </div>
                     </template>
 
-                    <!-- 🎯 DYNAMIC NODE BODY SLOT: Delegates rendering to DiscussionDetail -->
+                    <!-- Dynamic Node Detail Slot -->
                     <template v-slot:default-body="prop">
                         <div class="q-ml-md q-pa-xs">
                             <slot name="node-detail" :node="prop.node">
-                                <!-- Default fallback if parent component passes no custom slot -->
                                 <discussion-detail :node="prop.node" />
                             </slot>
                         </div>
@@ -127,6 +126,7 @@
         `,
 
         props: {
+            wikiSpaceId: { type: String, default: 'AGI_INTENT' },
             agiArtifactId: { type: String, required: false },
             sourceReferenceId: { type: String, required: false }
         },
@@ -144,35 +144,49 @@
             this.fetchTree();
         },
         watch: {
+            wikiSpaceId() { this.fetchTree(); },
             agiArtifactId() { this.fetchTree(); },
             sourceReferenceId() { this.fetchTree(); }
         },
         methods: {
-            fetchTree() {
+            resolveHeaders() {
+                return {
+                    'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN
+                        || (window.moqui && window.moqui.moquiSessionToken)
+                        || (document.querySelector('meta[name="moqui-session-token"]')?.getAttribute('content'))
+                        || ""
+                };
+            },
+
+            async fetchTree() {
                 this.loading = true;
                 this.error = null;
                 var vm = this;
 
-                var reqData = {};
-                if (this.agiArtifactId) reqData.agiArtifactId = this.agiArtifactId;
-                if (this.sourceReferenceId) reqData.sourceReferenceId = this.sourceReferenceId;
+                var artifactPathVal = this.sourceReferenceId || this.agiArtifactId || '';
+                var targetSpace = this.wikiSpaceId || 'AGI_INTENT';
 
-                $.ajax({
-                    type: 'POST',
-                    url: '/rest/s1/agi-ide/blueprint/tree',
-                    data: reqData,
-                    dataType: 'json',
-                    headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                    error: function (jqXHR, textStatus, errorThrown) {
-                        vm.error = "Error loading tree: " + errorThrown;
-                        vm.loading = false;
-                    },
-                    success: function (data) {
-                        vm.loading = false;
-                        vm.treeNodes = vm.formatNodes(data?.treeNodes || data || []);
-                        vm.$emit('tree-updated');
-                    }
-                });
+                try {
+                    const response = await axios.get('/rest/s1/agi-ide/getWikiTreeNodes', {
+                        params: {
+                            wikiSpaceId: targetSpace,
+                            artifactPath: artifactPathVal
+                        },
+                        headers: this.resolveHeaders()
+                    });
+
+                    vm.loading = false;
+                    const resData = response.data;
+                    vm.treeNodes = vm.formatNodes(resData?.treeNodes || resData || []);
+                    vm.$emit('tree-updated');
+                    // Auto-expand all loaded nodes after reactivity updates
+                    vm.$nextTick(function () {
+                        if (vm.$refs.qTreeRef) vm.$refs.qTreeRef.expandAll();
+                    });
+                } catch (err) {
+                    vm.loading = false;
+                    vm.error = "Error loading tree: " + (err.response?.data?.errors || err.message);
+                }
             },
 
             formatNodes(nodes) {
@@ -180,6 +194,8 @@
                 return nodes.map(function (n) {
                     return {
                         ...n,
+                        wikiPageId: n.wikiPageId || n.id,
+                        label: n.label || n.pagePath || 'Unnamed Node',
                         isCompleted: n.statusId === 'WeComplete',
                         children: n.children ? vm.formatNodes(n.children) : []
                     };
@@ -187,26 +203,27 @@
             },
 
             selectNode(node) {
-                this.selectedNodeId = node.workEffortId;
+                this.selectedNodeId = node.wikiPageId;
                 this.$emit('node-selected', node);
 
-                if (node.revisionNumber || node.metaJsonBuffer) {
+                if (node.publishedVersionName || node.revisionNumber || node.metaJsonBuffer) {
                     this.$emit('version-selected', {
-                        workEffortId: node.workEffortId,
+                        wikiPageId: node.wikiPageId,
+                        workEffortId: node.wikiPageId,
                         agiArtifactId: node.agiArtifactId || this.agiArtifactId,
-                        versionTag: node.revisionNumber || 'v1.0.0',
+                        versionTag: node.publishedVersionName || node.revisionNumber || 'v1.0.0',
                         metaJsonBuffer: node.metaJsonBuffer
                     });
                 }
             },
 
             getNodeIcon(type) {
-                if (type === 'WetIntent') return 'lightbulb';
+                if (type === 'WetIntent' || type === 'AGI_INTENT') return 'lightbulb';
                 if (type === 'WetAction') return 'build';
                 return 'chat';
             },
             getNodeIconColor(type) {
-                if (type === 'WetIntent') return 'amber-9';
+                if (type === 'WetIntent' || type === 'AGI_INTENT') return 'amber-9';
                 if (type === 'WetAction') return 'positive';
                 return 'primary';
             },
@@ -214,97 +231,70 @@
             addChildNode(parentNode) {
                 var vm = this;
 
-                // Step 1: Prompt for Node Type Selection
                 this.$q.dialog({
-                    title: 'Select Sub-Node Type',
-                    message: 'Choose the type of node to create under: ' + parentNode.workEffortName,
-                    options: {
-                        type: 'radio',
-                        model: 'WetDiscussion', // Default selection
-                        items: [
-                            { label: '💡 Intent / Goal (WetIntent)', value: 'WetIntent' },
-                            { label: '💬 Discussion / Topic (WetDiscussion)', value: 'WetDiscussion' },
-                            { label: '🛠️ Action / Implementation (WetAction)', value: 'WetAction' }
-                        ]
-                    },
+                    title: 'New Sub-Node Title',
+                    message: 'Enter title for the new sub-node under ' + (parentNode.label || parentNode.pagePath) + ':',
+                    prompt: { model: '', type: 'text' },
                     cancel: true,
                     persistent: true
-                }).onOk(function (selectedType) {
+                }).onOk(async function (val) {
+                    if (!val) return;
+                    vm.loading = true;
 
-                    // Step 2: Prompt for Node Name/Title
-                    vm.$q.dialog({
-                        title: 'New Node Title',
-                        message: 'Enter title for the new sub-node:',
-                        prompt: { model: '', type: 'text' },
-                        cancel: true,
-                        persistent: true
-                    }).onOk(function (val) {
-                        if (!val) return;
-                        vm.loading = true;
+                    var subPath = (parentNode.pagePath ? parentNode.pagePath + '/' : '') + val.replace(/\s+/g, '');
 
-                        $.ajax({
-                            type: 'POST',
-                            url: '/rest/s1/agi-ide/blueprint/create-node',
-                            data: {
-                                parentWorkEffortId: parentNode.workEffortId,
-                                workEffortName: val,
-                                agiArtifactId: vm.agiArtifactId,
-                                sourceReferenceId: vm.sourceReferenceId,
-                                workEffortTypeEnumId: selectedType // 🎯 Dynamically pass user-selected type
-                            },
-                            dataType: 'json',
-                            headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                            success: function () {
-                                vm.fetchTree();
-                            },
-                            error: function () {
-                                vm.loading = false;
-                            }
-                        });
-                    });
+                    try {
+                        await axios.post('/rest/s1/agi-ide/saveWikiNode', {
+                            wikiSpaceId: vm.wikiSpaceId || 'AGI_INTENT',
+                            parentWikiPageId: parentNode.wikiPageId,
+                            pagePath: subPath,
+                            content: '# ' + val + '\n\n'
+                        }, { headers: vm.resolveHeaders() });
+
+                        vm.fetchTree();
+                    } catch (err) {
+                        vm.loading = false;
+                        if (vm.$q) vm.$q.notify({ type: 'negative', message: 'Failed to add node: ' + err.message });
+                    }
                 });
             },
 
-            // 🎯 LINK TO ADDITIONAL ARTIFACT (Many-to-Many Junction)
             linkToAdditionalArtifact(node) {
                 var vm = this;
                 this.$q.dialog({
-                    title: 'Cross-Link WorkEffort Node',
-                    message: 'Enter target AgiArtifact ID or path to associate with this decision:',
+                    title: 'Cross-Link Wiki Node',
+                    message: 'Enter target AgiArtifact ID or path to associate with this node:',
                     prompt: { model: '', type: 'text' },
                     cancel: true
-                }).onOk(function (targetArtifactId) {
+                }).onOk(async function (targetArtifactId) {
                     if (!targetArtifactId) return;
-                    $.ajax({
-                        type: 'POST',
-                        url: '/rest/s1/agi-ide/blueprint/link-artifact',
-                        data: {
-                            workEffortId: node.workEffortId,
+                    try {
+                        await axios.post('/rest/s1/agi-ide/blueprint/link-artifact', {
+                            wikiPageId: node.wikiPageId,
                             agiArtifactId: targetArtifactId,
                             assocTypeEnumId: 'AweaCrossReference'
-                        },
-                        dataType: 'json',
-                        headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                        success: function () {
-                            vm.$q.notify({ type: 'positive', message: 'Linked decision node to target artifact successfully.' });
-                        }
-                    });
+                        }, { headers: vm.resolveHeaders() });
+
+                        if (vm.$q) vm.$q.notify({ type: 'positive', message: 'Linked node to target artifact successfully.' });
+                    } catch (err) {
+                        if (vm.$q) vm.$q.notify({ type: 'negative', message: 'Link failed: ' + err.message });
+                    }
                 });
             },
 
-            toggleNodeStatus(node) {
+            async toggleNodeStatus(node) {
                 var vm = this;
                 var newStatus = node.isCompleted ? 'WeComplete' : 'WeInProgress';
-                $.ajax({
-                    type: 'POST',
-                    url: '/rest/s1/agi-ide/blueprint/update-status',
-                    data: { workEffortId: node.workEffortId, statusId: newStatus },
-                    dataType: 'json',
-                    headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                    success: function () {
-                        vm.$emit('tree-updated');
-                    }
-                });
+                try {
+                    await axios.post('/rest/s1/agi-ide/blueprint/update-status', {
+                        wikiPageId: node.wikiPageId,
+                        statusId: newStatus
+                    }, { headers: this.resolveHeaders() });
+
+                    vm.$emit('tree-updated');
+                } catch (err) {
+                    if (vm.$q) vm.$q.notify({ type: 'negative', message: 'Failed to update status: ' + err.message });
+                }
             },
 
             handleDragStart(e, node) {
@@ -315,77 +305,73 @@
             handleDragOver(e) {
                 e.dataTransfer.dropEffect = 'copy';
             },
-            handleDropAndPaste(e, targetNode) {
+            async handleDropAndPaste(e, targetNode) {
                 var rawData = e.dataTransfer.getData('text/plain');
                 if (!rawData) return;
                 var sourceNode = JSON.parse(rawData);
 
-                if (sourceNode.workEffortId === targetNode.workEffortId) return;
+                if (sourceNode.wikiPageId === targetNode.wikiPageId) return;
 
                 var vm = this;
-                $.ajax({
-                    type: 'POST',
-                    url: '/rest/s1/agi-ide/blueprint/create-node',
-                    data: {
-                        parentWorkEffortId: targetNode.workEffortId,
-                        workEffortName: sourceNode.workEffortName + ' (Moved)',
-                        agiArtifactId: vm.agiArtifactId,
-                        sourceReferenceId: vm.sourceReferenceId,
-                        workEffortTypeEnumId: sourceNode.workEffortTypeEnumId
-                    },
-                    dataType: 'json',
-                    headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                    success: function () {
-                        vm.fetchTree();
-                    }
-                });
+                var movedPath = (targetNode.pagePath ? targetNode.pagePath + '/' : '') + (sourceNode.label || 'MovedNode');
+
+                try {
+                    await axios.post('/rest/s1/agi-ide/saveWikiNode', {
+                        wikiSpaceId: vm.wikiSpaceId || 'AGI_INTENT',
+                        parentWikiPageId: targetNode.wikiPageId,
+                        pagePath: movedPath,
+                        content: sourceNode.content || ''
+                    }, { headers: vm.resolveHeaders() });
+
+                    vm.fetchTree();
+                } catch (err) {
+                    if (vm.$q) vm.$q.notify({ type: 'negative', message: 'Failed to move node: ' + err.message });
+                }
             },
 
             copyNodeJson(node) {
                 this.copiedNodeData = node;
-                this.$q.notify({ type: 'info', message: 'Copied node: ' + node.workEffortName });
+                if (this.$q) this.$q.notify({ type: 'info', message: 'Copied node: ' + (node.label || node.pagePath) });
             },
-            pasteCopiedNode(targetNode) {
+            async pasteCopiedNode(targetNode) {
                 if (!this.copiedNodeData) {
-                    this.$q.notify({ type: 'warning', message: 'No node data copied in clipboard.' });
+                    if (this.$q) this.$q.notify({ type: 'warning', message: 'No node data copied in clipboard.' });
                     return;
                 }
                 var vm = this;
-                $.ajax({
-                    type: 'POST',
-                    url: '/rest/s1/agi-ide/blueprint/create-node',
-                    data: {
-                        parentWorkEffortId: targetNode.workEffortId,
-                        workEffortName: vm.copiedNodeData.workEffortName + ' (Copy)',
-                        workEffortTypeEnumId: vm.copiedNodeData.workEffortTypeEnumId,
-                        agiArtifactId: vm.agiArtifactId,
-                        sourceReferenceId: vm.sourceReferenceId
-                    },
-                    dataType: 'json',
-                    headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                    success: function () {
-                        vm.fetchTree();
-                    }
-                });
+                var pastedPath = (targetNode.pagePath ? targetNode.pagePath + '/' : '') + (vm.copiedNodeData.label || 'Copy');
+
+                try {
+                    await axios.post('/rest/s1/agi-ide/saveWikiNode', {
+                        wikiSpaceId: vm.wikiSpaceId || 'AGI_INTENT',
+                        parentWikiPageId: targetNode.wikiPageId,
+                        pagePath: pastedPath,
+                        content: vm.copiedNodeData.content || ''
+                    }, { headers: vm.resolveHeaders() });
+
+                    vm.fetchTree();
+                } catch (err) {
+                    if (vm.$q) vm.$q.notify({ type: 'negative', message: 'Failed to paste node: ' + err.message });
+                }
             },
 
             deleteNode(node) {
                 var vm = this;
                 this.$q.dialog({
                     title: 'Confirm Cancellation',
-                    message: 'Are you sure you want to cancel/delete: ' + node.workEffortName + '?',
+                    message: 'Are you sure you want to delete/cancel: ' + (node.label || node.pagePath) + '?',
                     cancel: true
-                }).onOk(function () {
-                    $.ajax({
-                        type: 'POST',
-                        url: '/rest/s1/agi-ide/blueprint/update-status',
-                        data: { workEffortId: node.workEffortId, statusId: 'WeCancelled' },
-                        dataType: 'json',
-                        headers: { 'moquiSessionToken': window.AGI_SERVER_CSRF_TOKEN || "" },
-                        success: function () {
-                            vm.fetchTree();
-                        }
-                    });
+                }).onOk(async function () {
+                    try {
+                        await axios.post('/rest/s1/agi-ide/blueprint/update-status', {
+                            wikiPageId: node.wikiPageId,
+                            statusId: 'WeCancelled'
+                        }, { headers: vm.resolveHeaders() });
+
+                        vm.fetchTree();
+                    } catch (err) {
+                        if (vm.$q) vm.$q.notify({ type: 'negative', message: 'Failed to delete node: ' + err.message });
+                    }
                 });
             },
 

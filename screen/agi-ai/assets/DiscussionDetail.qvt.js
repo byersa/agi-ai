@@ -6,7 +6,7 @@
                 <!-- Header Bar with Collapsible Toggle -->
                 <div class="row items-center justify-between q-mb-xs q-px-xs">
                     <span class="text-caption text-weight-bold text-grey-7 font-mono">
-                        SPECIFICATION DETAIL [{{ node?.workEffortId || 'DRAFT' }}]
+                        SPECIFICATION DETAIL [{{ node?.wikiPageId || 'DRAFT' }}]
                     </span>
                     <!-- 🎯 Toggle Collapse/Expand Button -->
                     <q-btn 
