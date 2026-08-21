@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- GENERAL AI QUERY & COMPLETION SERVICE                                 -->
+    <!-- ===================================================================== -->
+    <service verb="query" noun="ByAi" read-only="true" authenticate="true"
+             location="component://agi-ai/script/queryByAi.groovy">
+        <description>
+            Generalized RAG-driven AI query engine. Formats system instructions, user prompts,
+            and contextual entity/chunk data into a standard OpenAI-compatible payload,
+            dispatches to the configured LLM endpoint, and returns structured or text responses.
+        </description>
+        <in-parameters>
+            <parameter name="userPrompt" type="String" required="true"/>
+            <parameter name="systemInstruction" type="String"/>
+            <parameter name="ragContextList" type="List">
+                <description>List of Maps, EntityValues, or Strings providing context.</description>
+            </parameter>
+            <parameter name="targetComponent" type="String" default-value="nursinghome"/>
+            <parameter name="responseFormat" type="String" default-value="json">
+                <description>json, entity-list, or text</description>
+            </parameter>
+            <parameter name="temperature" type="BigDecimal" default="0.2"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="response" type="String"/>
+            <parameter name="structuredResult" type="Object"/>
+            <parameter name="status" type="String"/>
+        </out-parameters>
+    </service>
+
+</services>
