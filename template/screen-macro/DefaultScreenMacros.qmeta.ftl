@@ -38,7 +38,13 @@
     <title>AGI Agentic Workspace IDE</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900|Material+Icons" type="text/css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quasar@2.17.1/dist/quasar.css" type="text/css">
+    <link rel="stylesheet" href="/agi-ai-assets/css/agi-theme.css" type="text/css">
     <link rel="stylesheet" href="/agi-ide-include/agi-ide.css" type="text/css">
+    <!-- CodeMirror 5 Core & XML Mode -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
 </head>
 <body class="bg-grey-1">
 

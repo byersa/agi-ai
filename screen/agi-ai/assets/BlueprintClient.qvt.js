@@ -47,7 +47,7 @@
 
             const palettePosition = Vue.ref({ top: 120, left: (window.innerWidth || 1024) - 650 });
             const handlePan = (details) => {
-                if (!details || !details.delta) return; // 🎯 Guard against null/undefined touch-pan details
+                if (!details || !details.delta) return;
                 palettePosition.value.top += (details.delta.y || 0);
                 palettePosition.value.left += (details.delta.x || 0);
             };
@@ -187,115 +187,274 @@
             context: { type: Object, default: () => ({}) }
         },
         provide() {
-            // 🎯 Expose context (currentPathList, subscreens, selectedMariaId) to all descendants
             return {
                 nodeContext: this.context
             };
         },
-        data() {
-            return {
-                isResolved: false,
-                pollInterval: null
-            };
-        },
-        computed: {
-            targetType() {
-                if (!this.node) return 'div';
-                let activeNode = Array.isArray(this.node) ? (this.node[0] || {}) : this.node;
-                return !activeNode['@type'] && Array.isArray(activeNode.widgets) ? 'div' : (activeNode['@type'] || 'div');
-            }
-        },
-        mounted() {
-            this.ensureComponentResolution();
-        },
-        beforeUnmount() {
-            if (this.pollInterval) clearInterval(this.pollInterval);
-        },
         methods: {
-            ensureComponentResolution() {
-                const tag = this.targetType;
-                if (tag === 'div' || tag === 'span' || tag.startsWith('q-') || window.AgiComponents[tag]) {
-                    this.isResolved = true;
-                    return;
+            handleNodeClick(event, node) {
+                if (!node) return;
+                event.stopPropagation();
+
+                const mId = node.mariaId || node.id || node.attributes?.name || node.name;
+                if (!mId) return;
+
+                let cleanNode = {};
+                try {
+                    cleanNode = JSON.parse(JSON.stringify(node));
+                } catch (e) {
+                    cleanNode = {
+                        name: node.name || node._moquiTag,
+                        attributes: node.attributes || {},
+                        mariaId: mId
+                    };
                 }
-                this.pollInterval = setInterval(() => {
-                    if (window.AgiComponents[tag]) {
-                        this.isResolved = true;
-                        clearInterval(this.pollInterval);
+
+                const payload = {
+                    event: 'element-selected-by-id',
+                    mariaId: mId,
+                    node: cleanNode
+                };
+
+                // 1. BroadcastChannel (keep open / do not call close immediately)
+                try {
+                    if (!window.__agiContextBus) {
+                        window.__agiContextBus = new BroadcastChannel('agi-ide-context-bus');
                     }
-                }, 10);
+                    window.__agiContextBus.postMessage(payload);
+                } catch (e) {
+                    console.warn('ContextBus broadcast failed:', e);
+                }
+
+                // 2. Window event fallback
+                window.dispatchEvent(new CustomEvent('element-selected-by-id', {
+                    detail: payload
+                }));
             }
         },
         render() {
             if (!this.node) return null;
 
-            // If the node itself is a raw string/number primitive, return raw text directly
+            // Raw primitive values
             if (typeof this.node === 'string' || typeof this.node === 'number') {
                 return this.node;
             }
 
             let activeNode = Array.isArray(this.node) ? (this.node[0] || {}) : this.node;
 
-            // Un-wrap semantic <screen> envelope
-            if (activeNode._moquiTag === 'screen') {
-                const screenChildren = activeNode.children || activeNode.widgets || [];
-                return screenChildren.map(child => {
+            // 1. Tag & Attribute Normalization
+            const rawTag = (activeNode._moquiTag || activeNode['@type'] || activeNode.name || activeNode.tag || 'container').toString();
+            const tag = rawTag.startsWith('@') ? rawTag.slice(1) : rawTag;
+            const explicitType = activeNode['@type'];
+            const rawAttrs = activeNode.attributes || {};
+            const childNodes = activeNode.children || activeNode.widgets || [];
+
+            // 2. Selection & ContextBus Identity Attributes
+            const mId = activeNode.mariaId || activeNode.id || activeNode.name || '';
+
+            const isSelected = !!(this.context?.selectedMariaId && mId && this.context.selectedMariaId === mId);
+
+            const withSelection = (customProps = {}, defaultClass = '') => {
+                const finalClass = [
+                    defaultClass,
+                    customProps.class || '',
+                    isSelected ? 'agi-canvas-selected-node' : ''
+                ].filter(Boolean).join(' ');
+
+                return {
+                    ...customProps,
+                    class: finalClass,
+                    'data-maria-id': mId || undefined,
+                    'mariaid': mId || undefined,
+                    onClick: (e) => this.handleNodeClick(e, activeNode)
+                };
+            };
+
+            // Helper to recursively render children
+            const renderChildren = () => {
+                return childNodes.map(child => {
+                    if (typeof child === 'string' || typeof child === 'number') return child;
                     return Vue.h(window.AgiComponents['m-blueprint-node'], {
                         node: child,
                         context: this.context
                     });
                 });
-            }
+            };
 
-            const isScreenWrapper = !activeNode['@type'] && Array.isArray(activeNode.widgets);
-            let type = isScreenWrapper ? 'div' : (activeNode['@type'] || 'div');
+            // 🎯 Render a floating AI action badge (visible on hover or when selected)
+            const renderActionBadge = (node) => {
+                const nodeTitle = node.attributes?.name || node.name || node.title || node._moquiTag || 'element';
+                return Vue.h('div', {
+                    class: [
+                        'agi-action-badge absolute-top-right z-top row items-center q-gutter-x-xs rounded-borders shadow-2',
+                        isSelected ? 'bg-primary text-white is-active' : 'bg-slate-800 text-slate-200'
+                    ].join(' '),
+                    style: 'transform: translate(-4px, -50%); font-size: 10px; padding: 2px 6px; border-radius: 4px; pointer-events: auto; cursor: pointer;'
+                }, [
+                    Vue.h('span', { class: 'text-weight-bold font-mono' }, nodeTitle),
+                    Vue.h(Vue.resolveComponent('q-btn'), {
+                        icon: 'terminal',
+                        size: 'xs',
+                        dense: true,
+                        flat: true,
+                        round: true,
+                        color: 'white',
+                        onClick: (e) => {
+                            e.stopPropagation();
+                            const mId = node.mariaId || node.id || nodeTitle;
+                            const payload = {
+                                event: 'open-prompt-editor',
+                                focusCoordinate: mId,
+                                artifactLocation: this.context?.screenPath || '',
+                                targetComponent: 'nursinghome',
+                                adHocPrompt: `Refactor element [${nodeTitle}] (${mId}): `
+                            };
 
-            // 1. Unify and extract raw properties
-            let propsMap = { ...(activeNode.attributes || {}) };
-            if (activeNode.title) propsMap.title = activeNode.title;
-            if (activeNode.name && !propsMap.name) propsMap.name = activeNode.name;
-            if (activeNode.id) propsMap.id = activeNode.id;
-            if (activeNode.mariaId) propsMap.mariaid = activeNode.mariaId;
-            if (activeNode.style) propsMap.style = activeNode.style;
+                            try {
+                                if (window.__agiContextBus) window.__agiContextBus.postMessage(payload);
+                            } catch (err) { }
+                            window.dispatchEvent(new CustomEvent('open-prompt-editor', { detail: payload }));
+                        }
+                    })
+                ]);
+            };
 
-            // 2. Normalize Quasar-specific component properties
-            if (type === 'q-btn' || type === 'submit') {
-                type = 'q-btn';
-                propsMap.label = propsMap.label || propsMap.text || activeNode.title || 'Submit';
-                delete propsMap.text;
-                if (!propsMap.color) propsMap.color = 'primary';
-            } else if (['q-input', 'q-select', 'q-textarea', 'm-text-line', 'm-drop-down'].includes(type)) {
-                propsMap.label = propsMap.label || propsMap.title || activeNode.title || '';
-            }
+            // 3. TIER 1: Check for explicitly registered custom components (m-screen-layout, m-subscreens-active, etc.)
+            let CustomComp = (explicitType && window.AgiComponents[explicitType])
+                || window.AgiComponents[tag]
+                || (explicitType && Vue.resolveComponent(explicitType))
+                || null;
 
-            const childNodes = activeNode.children || activeNode.widgets || [];
+            if (CustomComp && typeof CustomComp !== 'string') {
+                let propsMap = withSelection({ ...rawAttrs });
+                if (activeNode.id) propsMap.id = activeNode.id;
 
-            // 3. Resolve Component Definition cleanly
-            let componentDefinition = window.AgiComponents[type];
-            if (!componentDefinition) {
-                if (type.startsWith('q-')) {
-                    componentDefinition = Vue.resolveComponent(type) || type;
-                } else {
-                    componentDefinition = type;
-                }
-            }
-
-            // 4. Recursively build child VNodes (Handling text strings vs sub-nodes)
-            const childrenRenderMap = childNodes.map(child => {
-                if (typeof child === 'string' || typeof child === 'number') {
-                    return child; // 🎯 Return string primitive directly to parent VNode slot!
-                }
-                return Vue.h(window.AgiComponents['m-blueprint-node'], {
-                    node: child,
-                    context: this.context
+                return Vue.h(CustomComp, propsMap, {
+                    default: renderChildren
                 });
-            });
+            }
 
-            // 5. Render active component passing normalized props and slot children
-            return Vue.h(componentDefinition, propsMap, {
-                default: () => childrenRenderMap
-            });
-        },
+            // 4. TIER 2: Semantic Moqui XML AST Mapping to Quasar UI
+            switch (tag) {
+                case 'screen':
+                case 'widgets':
+                    return Vue.h('div', withSelection({}, 'blueprint-widgets-root full-width column q-gutter-y-md'), renderChildren());
+
+                case 'container-box':
+                    return Vue.h(Vue.resolveComponent('q-card'), withSelection({
+                        flat: false,
+                        bordered: true
+                    }, 'shadow-1 q-mb-md full-width bg-white rounded-borders relative-position agi-hover-container'), {
+                        default: () => [
+                            renderActionBadge(activeNode),
+                            ...renderChildren()
+                        ]
+                    });
+
+                case 'form-single':
+                    return Vue.h('form', withSelection({
+                        onSubmit: (e) => e.preventDefault()
+                    }, 'moqui-form-single full-width column q-gutter-y-sm relative-position agi-hover-container'), [
+                        renderActionBadge(activeNode),
+                        ...renderChildren()
+                    ]);
+
+                case 'field':
+                    return Vue.h('div', withSelection({
+                        'data-field-name': rawAttrs.name || activeNode.name
+                    }, 'moqui-field-wrapper full-width q-mb-xs relative-position agi-hover-container'), [
+                        renderActionBadge(activeNode),
+                        ...renderChildren()
+                    ]);
+
+                case 'box-header':
+                    const headerTitle = rawAttrs.title || activeNode.title || 'Panel';
+                    return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'bg-blue-grey-1 text-blue-grey-9 q-py-sm text-subtitle2 text-weight-bold row items-center justify-between'), () => [
+                        Vue.h('span', headerTitle),
+                        Vue.h(Vue.resolveComponent('q-icon'), { name: 'widgets', size: '16px', color: 'blue-grey-6' })
+                    ]);
+
+                case 'box-body':
+                    return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'q-pa-md column q-gutter-y-sm'), { default: renderChildren });
+
+                case 'form-list':
+                    return Vue.h('div', withSelection({}, 'moqui-form-list q-pa-sm bg-grey-1 rounded-borders border-dashed'), renderChildren());
+
+                case 'default-field':
+                case 'header-field':
+                    const fieldTitle = rawAttrs.title || activeNode.title || '';
+                    return Vue.h('div', withSelection({}, 'column full-width'), [
+                        fieldTitle ? Vue.h('label', { class: 'text-caption text-weight-medium text-grey-8 q-mb-xs' }, fieldTitle) : null,
+                        Vue.h('div', { class: 'full-width' }, renderChildren())
+                    ]);
+
+                case 'text-line':
+                case 'm-text-line':
+                    return Vue.h(Vue.resolveComponent('q-input'), withSelection({
+                        modelValue: rawAttrs.value || '',
+                        placeholder: rawAttrs.placeholder || (rawAttrs.size ? `Size: ${rawAttrs.size}` : ''),
+                        outlined: true,
+                        dense: true,
+                        readonly: true
+                    }, 'bg-white'));
+
+                case 'date-time':
+                case 'm-date-time':
+                    return Vue.h(Vue.resolveComponent('q-input'), withSelection({
+                        modelValue: rawAttrs.format ? `Format: ${rawAttrs.format}` : 'YYYY-MM-DD',
+                        outlined: true,
+                        dense: true,
+                        readonly: true,
+                        append: () => Vue.h(Vue.resolveComponent('q-icon'), { name: 'event', class: 'cursor-pointer' })
+                    }, 'bg-white'));
+
+                case 'drop-down':
+                case 'm-drop-down':
+                    const options = childNodes
+                        .filter(c => (c._moquiTag === 'option' || c.name === 'option'))
+                        .map(c => (c.attributes?.text || c.text || c.attributes?.key || c.key || ''));
+
+                    return Vue.h(Vue.resolveComponent('q-select'), withSelection({
+                        modelValue: options.length > 0 ? options[0] : 'Select Option...',
+                        options: options.length > 0 ? options : ['Select Option...'],
+                        outlined: true,
+                        dense: true,
+                        readonly: true
+                    }, 'bg-white'));
+
+                case 'submit':
+                case 'm-submit':
+                case 'q-btn':
+                    return Vue.h(Vue.resolveComponent('q-btn'), withSelection({
+                        label: rawAttrs.text || activeNode.title || 'Submit',
+                        icon: (rawAttrs.icon || '').replace(/^fa fa-/, '') || 'check',
+                        color: 'primary',
+                        dense: true,
+                        unelevated: true
+                    }, 'q-px-md q-mt-sm'));
+
+                case 'container-row':
+                    return Vue.h('div', withSelection({}, 'row q-col-gutter-md full-width'), renderChildren());
+
+                case 'container-col':
+                    const mdSize = rawAttrs.md || '12';
+                    return Vue.h('div', withSelection({}, `col-12 col-md-${mdSize}`), renderChildren());
+
+                case 'container':
+                    return Vue.h('div', withSelection({
+                        style: rawAttrs.style || ''
+                    }, 'moqui-container q-pa-xs'), renderChildren());
+
+                case 'label':
+                    return Vue.h('div', withSelection({}, rawAttrs.style || 'text-body2 text-grey-9'),
+                        rawAttrs.text || (childNodes[0] && typeof childNodes[0] === 'string' ? childNodes[0] : ''));
+
+                default:
+                    return Vue.h('div', withSelection({
+                        'data-tag': tag
+                    }, 'moqui-generic-node q-pa-xs'), renderChildren());
+            }
+        }
     };
 
     window.AgiComponents['ComponentFactory'] = {
@@ -327,7 +486,6 @@
             const props = comp.properties || {};
             const children = comp.children || [];
 
-            // Check global macros first
             let macroDef = BlueprintClient.macros[type];
             let resolvedComponent = type;
             let resolvedProps = { ...props };
@@ -338,15 +496,12 @@
                 resolvedComponent = macroDef.component || 'div';
                 resolvedProps = { ...macroDef.properties, ...resolvedProps };
                 if (macroDef.children) {
-                    // Deep copy macro children and potentially merge original children?
-                    // For now, let's keep it simple and just use macro children.
                     resolvedChildren = [...(macroDef.children || []), ...resolvedChildren];
                 }
                 type = resolvedComponent.toLowerCase();
             }
 
-            // Apply Auto-Binding from DataStore if ID matches a field
-            let boundValue = this.dataStore[comp.id]; // Access it so Vue tracks it
+            let boundValue = this.dataStore[comp.id];
             if (comp.id && boundValue !== undefined) {
                 resolvedProps.value = boundValue;
             }
@@ -354,18 +509,14 @@
             if (type.startsWith('q-')) {
                 isQuasar = true;
 
-                // Validation Rule Injection
                 if (resolvedProps.required === true && !resolvedProps.rules) {
                     const labelText = resolvedProps.label || "Field";
                     resolvedProps.rules = [(val) => {
-                        console.info("PROMPT VALIDATION for " + labelText, val);
                         return (!!val && val.toString().trim().length > 0) || (labelText + " is required");
                     }];
                     resolvedProps['lazy-rules'] = false;
-                    console.info("Attaching Rules to " + comp.id, resolvedProps.rules);
                 }
 
-                // Automatically normalize 'value' to 'modelValue' for Quasar
                 const currentVal = (this.dataStore[comp.id] !== undefined) ? this.dataStore[comp.id] : (resolvedProps.modelValue || (resolvedProps.value || ""));
                 resolvedProps.modelValue = currentVal;
                 resolvedProps['onUpdate:modelValue'] = (val) => {
@@ -374,7 +525,6 @@
                 delete resolvedProps.value;
             }
 
-            // Simple Factory Mapping Fallback
             let quasarCompName = resolvedComponent;
             let quasarProps = { ...resolvedProps };
 
@@ -409,7 +559,6 @@
             const QuasarComp = (quasarCompName.startsWith('q-')) ? Vue.resolveComponent(quasarCompName) : quasarCompName;
             const ComponentFactory = Vue.resolveComponent('ComponentFactory');
 
-            // Pass children definitively via Vue 3 slot objects
             let childNodes = undefined;
             if (resolvedChildren.length > 0) {
                 childNodes = { default: () => Vue.h(ComponentFactory, { components: resolvedChildren }) };
@@ -417,7 +566,6 @@
                 childNodes = { default: () => resolvedProps.text };
             }
 
-            // Add selection highlighting and click handler
             const finalQuasarProps = {
                 ...quasarProps,
                 onClick: (e) => {
@@ -435,7 +583,6 @@
         props: ['actions'],
         template: `
                 <div class="column items-center q-gutter-y-lg q-py-xl" style="position: relative;">
-                    <!-- Vertical Connector Line -->
                     <div style="position: absolute; top: 0; bottom: 0; left: 50%; width: 4px; background: rgba(63, 81, 181, 0.1); transform: translateX(-50%); z-index: 0;"></div>
                     
                     <template v-for="(action, i) in actions" :key="action.id || i">
@@ -486,7 +633,6 @@
     };
 
     const BlueprintClient = {
-
         macros: {},
 
         loadMacros: async function () {
@@ -501,22 +647,18 @@
         },
 
         fetchBlueprint: async function (componentName, screenPath) {
-            // Fetch from the getBlueprint REST GET endpoint
-            debugger;
             const response = await fetch(`/rest/s1/agi-ide/getBlueprint?componentName=${componentName}&screenPath=${screenPath}`);
             const data = await response.json();
             return data.blueprint;
         },
 
         setupSSE: function (componentName, screenPath, onUpdate, onCommand) {
-            // Setup SSE listener for hot-reload
             const url = `/rest/s1/agi-ide/registerClient?componentName=${componentName}&screenPath=${screenPath}`;
             const eventSource = new EventSource(url);
 
             eventSource.addEventListener('update', (event) => {
                 console.log("Blueprint Update Received:", event.data);
                 const data = JSON.parse(event.data);
-                debugger;
                 if (data.screen === screenPath) {
                     this.fetchBlueprint(componentName, screenPath).then(onUpdate);
                 }
@@ -535,16 +677,11 @@
 
             eventSource.onerror = (err) => {
                 console.error("SSE Error:", err);
-                // eventSource.close();
             };
 
             return eventSource;
         },
 
-        /**
-         * Process an incoming AI or System command against a reactive blueprint object.
-         * Avoids full-page reloads for incremental property or structure changes.
-         */
         processCommand: function (blueprint, cmd) {
             if (!blueprint || !cmd) return;
 
@@ -564,41 +701,28 @@
                 case 'updateProperty':
                     const target = findCompById(blueprint.structure, cmd.payload.id);
                     if (target) {
-                        // Capture original style to revert later
                         const originalStyle = target.properties.style || '';
-
-                        // Apply the "Pulse"
                         target.properties = {
                             ...(target.properties || {}),
                             ...(cmd.payload.properties || {})
                         };
-                        console.log(`[Flash-Safe] Pulsing ${cmd.payload.id}`);
-
-                        // The Browser-side Timer (KRL Retrieval #2)
                         setTimeout(() => {
                             target.properties.style = originalStyle;
-                            console.log(`[Flash-Safe] Pulse cleared for ${cmd.payload.id}`);
-                        }, 2000); // 2-second highlight
+                        }, 2000);
                     }
                     break;
                 case 'addComponent':
                     if (!blueprint.structure) blueprint.structure = [];
                     blueprint.structure.push(cmd.payload);
-                    console.log(`[Flash-Safe] Component added: ${cmd.payload.id}`);
                     break;
                 case 'addMultipleComponents':
                     if (!blueprint.structure) blueprint.structure = [];
                     if (cmd.payload && Array.isArray(cmd.payload.components)) {
                         cmd.payload.components.forEach(c => blueprint.structure.push(c));
-                        console.log(`[Flash-Safe] Bulk injection complete: \${cmd.payload.components.length} components`);
                     }
-                    break;
-                case 'updateField':
-                    console.log("[Flash-Safe] Field updated", cmd.payload);
                     break;
                 case 'clear':
                     blueprint.structure = [];
-                    console.log("[Flash-Safe] Blueprint cleared");
                     break;
                 default:
                     console.warn("[Flash-Safe] Unknown command action:", cmd.action);
@@ -606,9 +730,6 @@
         },
     };
 
-    // Maintain your existing global streaming tracking endpoints
     window.BlueprintClient = BlueprintClient;
-
     console.info("🔌 [BlueprintClient] Component definitions successfully linked to window.AgiComponents.");
-
 })();

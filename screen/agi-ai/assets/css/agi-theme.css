@@ -1,0 +1,70 @@
+:root {
+    /* 1. Default AGI Token Definitions */
+    --agi-brand-primary: #1976D2;
+    --agi-brand-secondary: #455A64;
+    --agi-brand-accent: #00897B;
+    --agi-surface-ground: #F8FAFC;
+    --agi-surface-panel: #FFFFFF;
+    --agi-surface-header: #F1F5F9;
+    --agi-text-main: #0F172A;
+    --agi-text-muted: #64748B;
+    --agi-border-subtle: #CBD5E1;
+    --agi-state-positive: #21BA45;
+    --agi-state-warning: #F2C037;
+    --agi-state-negative: #C10015;
+    --agi-state-info: #31CCEC;
+    --agi-radius-panel: 6px;
+    --agi-radius-control: 4px;
+
+    /* 2. Quasar Framework Variable Bridge */
+    --q-primary: var(--agi-brand-primary);
+    --q-secondary: var(--agi-brand-secondary);
+    --q-accent: var(--agi-brand-accent);
+    --q-dark: var(--agi-text-main);
+    --q-dark-page: var(--agi-surface-ground);
+    --q-positive: var(--agi-state-positive);
+    --q-negative: var(--agi-state-negative);
+    --q-info: var(--agi-state-info);
+    --q-warning: var(--agi-state-warning);
+}
+
+/* ========================================================================= */
+/* 3. AGI Abstract Semantic Classes (Applied to Moqui Blueprint Nodes)      */
+/* ========================================================================= */
+
+/* Panel & Container Boxes */
+.agi-panel,
+.blueprint-widgets-root .q-card {
+    background-color: var(--agi-surface-panel) !important;
+    border: 1px solid var(--agi-border-subtle) !important;
+    border-radius: var(--agi-radius-panel) !important;
+}
+
+.agi-panel-header,
+.blueprint-widgets-root .q-card__section:first-child {
+    background-color: var(--agi-surface-header) !important;
+    color: var(--agi-text-main) !important;
+    border-bottom: 1px solid var(--agi-border-subtle) !important;
+}
+
+/* Typography & Form Controls */
+.agi-form-label {
+    color: var(--agi-text-muted) !important;
+    font-size: 0.75rem !important;
+    font-weight: 500 !important;
+}
+
+.agi-input-control .q-field__control {
+    border-radius: var(--agi-radius-control) !important;
+    background-color: var(--agi-surface-panel) !important;
+}
+
+/* IDE Canvas Workspace */
+#canvas-editor-root {
+    background-color: var(--agi-surface-ground) !important;
+}
+
+#canvas-header-card {
+    background-color: var(--agi-surface-panel) !important;
+    border: 1px solid var(--agi-border-subtle) !important;
+}
