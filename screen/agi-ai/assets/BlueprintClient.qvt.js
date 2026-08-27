@@ -196,40 +196,35 @@
                 if (!node) return;
                 event.stopPropagation();
 
-                const mId = node.mariaId || node.id || node.attributes?.name || node.name;
-                if (!mId) return;
-
-                let cleanNode = {};
-                try {
-                    cleanNode = JSON.parse(JSON.stringify(node));
-                } catch (e) {
-                    cleanNode = {
-                        name: node.name || node._moquiTag,
-                        attributes: node.attributes || {},
-                        mariaId: mId
-                    };
+                let mId = node.mariaId || node.id || node.attributes?.name || node.name;
+                if ((!mId || mId === 'maria_field' || mId === 'field') && (node.attributes?.name || node.name)) {
+                    mId = `maria_field#${node.attributes?.name || node.name}`;
                 }
+
+                if (mId && (mId.includes('agi-workspace-root') || mId.includes('AgiWorkspace'))) {
+                    return;
+                }
+
+                console.log("🎯 [CLICK DETECTED ON NODE]:", {
+                    tag: node._moquiTag || node.name,
+                    mariaId: mId,
+                    nodeAttributes: node.attributes
+                });
 
                 const payload = {
                     event: 'element-selected-by-id',
-                    mariaId: mId,
-                    node: cleanNode
+                    mariaId: mId
                 };
 
-                // 1. BroadcastChannel (keep open / do not call close immediately)
+                // Broadcast on Channel and dispatch Window event
                 try {
                     if (!window.__agiContextBus) {
                         window.__agiContextBus = new BroadcastChannel('agi-ide-context-bus');
                     }
                     window.__agiContextBus.postMessage(payload);
-                } catch (e) {
-                    console.warn('ContextBus broadcast failed:', e);
-                }
+                } catch (e) { }
 
-                // 2. Window event fallback
-                window.dispatchEvent(new CustomEvent('element-selected-by-id', {
-                    detail: payload
-                }));
+                window.dispatchEvent(new CustomEvent('element-selected-by-id', { detail: payload }));
             }
         },
         render() {
@@ -250,7 +245,14 @@
             const childNodes = activeNode.children || activeNode.widgets || [];
 
             // 2. Selection & ContextBus Identity Attributes
-            const mId = activeNode.mariaId || activeNode.id || activeNode.name || '';
+            let mId = activeNode.mariaId || activeNode.id || activeNode.attributes?.name || activeNode.name || '';
+            // If mariaId is just the generic placeholder, override it with the actual field name
+            if ((!mId || mId === 'maria_field' || mId === 'field') && (rawAttrs.name || activeNode.name)) {
+                const fName = rawAttrs.name || activeNode.name;
+                mId = (this.context?.selectedMariaId && !this.context.selectedMariaId.includes(fName))
+                    ? `${this.context.selectedMariaId}#${fName}`
+                    : fName;
+            }
 
             const isSelected = !!(this.context?.selectedMariaId && mId && this.context.selectedMariaId === mId);
 
@@ -266,7 +268,7 @@
                     class: finalClass,
                     'data-maria-id': mId || undefined,
                     'mariaid': mId || undefined,
-                    onClick: (e) => this.handleNodeClick(e, activeNode)
+                    onClick: (e) => this.handleNodeClick(e, activeNode) // Calls handleNodeClick above
                 };
             };
 
@@ -359,54 +361,62 @@
                         ...renderChildren()
                     ]);
 
-                case 'field':
-                    return Vue.h('div', withSelection({
-                        'data-field-name': rawAttrs.name || activeNode.name
-                    }, 'moqui-field-wrapper full-width q-mb-xs relative-position agi-hover-container'), [
-                        renderActionBadge(activeNode),
-                        ...renderChildren()
-                    ]);
-
-                case 'box-header':
-                    const headerTitle = rawAttrs.title || activeNode.title || 'Panel';
-                    return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'bg-blue-grey-1 text-blue-grey-9 q-py-sm text-subtitle2 text-weight-bold row items-center justify-between'), () => [
-                        Vue.h('span', headerTitle),
-                        Vue.h(Vue.resolveComponent('q-icon'), { name: 'widgets', size: '16px', color: 'blue-grey-6' })
-                    ]);
-
                 case 'box-body':
                     return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'q-pa-md column q-gutter-y-sm'), { default: renderChildren });
 
                 case 'form-list':
                     return Vue.h('div', withSelection({}, 'moqui-form-list q-pa-sm bg-grey-1 rounded-borders border-dashed'), renderChildren());
 
+                case 'field':
+                    const fieldIdentifier = rawAttrs.name || activeNode.name || mId;
+                    return Vue.h('div', withSelection({
+                        'data-field-name': fieldIdentifier,
+                        'name': fieldIdentifier
+                    }, 'moqui-field-wrapper full-width q-mb-xs relative-position agi-hover-container'), [
+                        renderActionBadge(activeNode),
+                        ...renderChildren()
+                    ]);
+
                 case 'default-field':
                 case 'header-field':
                     const fieldTitle = rawAttrs.title || activeNode.title || '';
-                    return Vue.h('div', withSelection({}, 'column full-width'), [
-                        fieldTitle ? Vue.h('label', { class: 'text-caption text-weight-medium text-grey-8 q-mb-xs' }, fieldTitle) : null,
+                    return Vue.h('div', { class: 'column full-width' }, [
+                        // Removed hardcoded 'text-grey-8' to allow --agi-text-main to cascade
+                        fieldTitle ? Vue.h('label', {
+                            class: 'text-caption text-weight-medium q-mb-xs',
+                            style: 'color: var(--agi-text-main);'
+                        }, fieldTitle) : null,
                         Vue.h('div', { class: 'full-width' }, renderChildren())
+                    ]);
+
+                case 'box-header':
+                    const headerTitle = rawAttrs.title || activeNode.title || 'Panel';
+                    return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'bg-blue-grey-1 q-py-sm text-subtitle2 text-weight-bold row items-center justify-between'), () => [
+                        Vue.h('span', { style: 'color: var(--agi-text-main);' }, headerTitle),
+                        Vue.h(Vue.resolveComponent('q-icon'), { name: 'widgets', size: '16px', color: 'blue-grey-6' })
                     ]);
 
                 case 'text-line':
                 case 'm-text-line':
-                    return Vue.h(Vue.resolveComponent('q-input'), withSelection({
+                    return Vue.h(Vue.resolveComponent('q-input'), {
                         modelValue: rawAttrs.value || '',
                         placeholder: rawAttrs.placeholder || (rawAttrs.size ? `Size: ${rawAttrs.size}` : ''),
                         outlined: true,
                         dense: true,
-                        readonly: true
-                    }, 'bg-white'));
+                        readonly: true,
+                        class: 'bg-white pointer-events-none'
+                    });
 
                 case 'date-time':
                 case 'm-date-time':
-                    return Vue.h(Vue.resolveComponent('q-input'), withSelection({
+                    return Vue.h(Vue.resolveComponent('q-input'), {
                         modelValue: rawAttrs.format ? `Format: ${rawAttrs.format}` : 'YYYY-MM-DD',
                         outlined: true,
                         dense: true,
                         readonly: true,
+                        class: 'bg-white pointer-events-none',
                         append: () => Vue.h(Vue.resolveComponent('q-icon'), { name: 'event', class: 'cursor-pointer' })
-                    }, 'bg-white'));
+                    });
 
                 case 'drop-down':
                 case 'm-drop-down':
@@ -414,14 +424,14 @@
                         .filter(c => (c._moquiTag === 'option' || c.name === 'option'))
                         .map(c => (c.attributes?.text || c.text || c.attributes?.key || c.key || ''));
 
-                    return Vue.h(Vue.resolveComponent('q-select'), withSelection({
+                    return Vue.h(Vue.resolveComponent('q-select'), {
                         modelValue: options.length > 0 ? options[0] : 'Select Option...',
                         options: options.length > 0 ? options : ['Select Option...'],
                         outlined: true,
                         dense: true,
-                        readonly: true
-                    }, 'bg-white'));
-
+                        readonly: true,
+                        class: 'bg-white pointer-events-none'
+                    });
                 case 'submit':
                 case 'm-submit':
                 case 'q-btn':

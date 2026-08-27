@@ -68,3 +68,35 @@
     background-color: var(--agi-surface-panel) !important;
     border: 1px solid var(--agi-border-subtle) !important;
 }
+
+/* 🎯 Bind Canvas Viewport to Theme Surface & Text Variables */
+#canvas-elements-viewport {
+    color: var(--agi-text-main);
+}
+
+/* Field labels and form text */
+.moqui-field-wrapper label,
+.moqui-field-label,
+.moqui-form-single label {
+    color: var(--agi-text-main) !important;
+}
+
+/* Form headers and card panel titles */
+.moqui-box-header-title,
+.moqui-screen-title {
+    color: var(--agi-text-main) !important;
+}
+
+/* Quasar Native Controls Bridge */
+.moqui-field-wrapper .q-field__label,
+.moqui-field-wrapper .q-field__native,
+.moqui-field-wrapper input {
+    color: var(--agi-text-main);
+}
+
+/* Card and Container Backgrounds */
+.moqui-card-panel,
+.moqui-container-box {
+    background-color: var(--agi-surface-panel) !important;
+    border-radius: var(--agi-radius-panel) !important;
+}

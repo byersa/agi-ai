@@ -238,23 +238,27 @@
 <#elseif containerType?has_content>
   <#local resolvedType = containerType>
 </#if>
+<#local assignedId = .node['@id']!'container-' + qmetaElementCounter>
+<#local thisMariaId = "${getCleanPath()}#${assignedId}">
 {
   "_moquiTag": "container",
   "@type": "${resolvedType}",
   "id": "${.node['@id']!}",
   "style": "${.node['@style']!?json_string}",
-  "mariaId": "${getCleanPath()}#${.node['@id']!'container-' + qmetaElementCounter}",
+  "mariaId": "${thisMariaId}",
   "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
 
 <#macro "container-box">
+<#local boxId = .node['@id']!(.node['box-header'][0]['@title']!'container-box')?lower_case?replace(' ', '-')>
+<#local thisMariaId = "${getCleanPath()}#${boxId}">
 {
   "_moquiTag": "container-box",
   "@type": "m-container-box",
   "id": "${.node['@id']!}",
   "title": "${.node['@title']!(.node['box-header'][0]['@title']!'')}",
-  "mariaId": "${sri.getActiveScreenDef().getLocation()}#${.node['@id']!''}",
+  "mariaId": "${thisMariaId}",
   "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
@@ -308,27 +312,35 @@
 <#-- ================ 4. HIGH-FIDELITY FORM CORE MAPPINGS ================ -->
 <#macro "form-single">
 <#local transitionName = .node['@transition']!''>
+<#local formName = .node['@name']!'form-' + qmetaElementCounter>
+<#local prevParent = currentFormName!''>
+<#global currentFormName = formName>
+<#local thisMariaId = "${getCleanPath()}#${formName}">
 {
   "_moquiTag": "form-single",
   "@type": "m-form",
-  "name": "${.node['@name']!}",
+  "name": "${formName}",
   "transition": "${transitionName}",
   "action": "#",
-  "mariaId": "${getCleanPath()}#${.node['@name']!}",
+  "mariaId": "${thisMariaId}",
   "children": [<@renderChildren parentNode=.node/>]
 }
+<#global currentFormName = prevParent>
 </#macro>
 
 <#macro "default-field"><@renderChildren parentNode=.node/></#macro>
 <#macro "conditional-field"><@renderChildren parentNode=.node/></#macro>
 
 <#macro "field">
+<#local fieldName = .node['@name']!'field-' + qmetaElementCounter>
+<#local prefix = (currentFormName?has_content)?then(getCleanPath() + '#' + currentFormName, getCleanPath())>
+<#local thisMariaId = "${prefix}#${fieldName}">
 {
   "_moquiTag": "field",
   "@type": "FormField",
-  "name": "${.node['@name']!}",
-  "title": "${.node['@title']!((.node['@name']?replace('^[a-z]', '', 'r'))?cap_first)}",
-  "mariaId": "${sri.getActiveScreenDef().getLocation()}#${.node['@name']!}",
+  "name": "${fieldName}",
+  "title": "${.node['@title']!((fieldName?replace('^[a-z]', '', 'r'))?cap_first)}",
+  "mariaId": "${thisMariaId}",
   "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
