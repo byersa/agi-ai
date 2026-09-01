@@ -310,6 +310,44 @@
 </#macro>
 
 <#-- ================ 4. HIGH-FIDELITY FORM CORE MAPPINGS ================ -->
+<#-- ================ FORM LIST MAPPINGS ================ -->
+<#macro "form-list">
+<#local formName = .node['@name']!'formList-' + qmetaElementCounter>
+<#local prevParent = currentFormName!''>
+<#global currentFormName = formName>
+<#local thisMariaId = "${getCleanPath()}#${formName}">
+{
+  "_moquiTag": "form-list",
+  "@type": "m-form-list",
+  "name": "${formName}",
+  "list": "${.node['@list']!}",
+  "mariaId": "${thisMariaId}",
+  "children": [<@renderChildren parentNode=.node/>]
+}
+<#global currentFormName = prevParent>
+</#macro>
+
+<#macro "header-field">
+{
+  "_moquiTag": "header-field",
+  "@type": "m-header-field",
+  "title": "${.node['@title']!}",
+  "children": [<@renderChildren parentNode=.node/>]
+}
+</#macro>
+
+<#macro "display-entity">
+{
+  "_moquiTag": "display-entity",
+  "@type": "m-display-entity",
+  "attributes": {
+    "entity-name": "${.node['@entity-name']!}",
+    "key-field-name": "${.node['@key-field-name']!}",
+    "text": "${.node['@text']!}"
+  }
+}
+</#macro>
+
 <#macro "form-single">
 <#local transitionName = .node['@transition']!''>
 <#local formName = .node['@name']!'form-' + qmetaElementCounter>

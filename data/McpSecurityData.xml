@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entity-facade-xml type="seed">
+
+    <!-- Facet Type Enumeration Type -->
+    <moqui.basic.EnumerationType enumTypeId="McpFacetType" description="MCP Resource Facet Types"/>
+
+    <!-- Facet Types -->
+    <moqui.basic.Enumeration enumId="McpFacetMeta" enumTypeId="McpFacetType"
+                            description="General Metadata" sequenceNum="10"/>
+    <moqui.basic.Enumeration enumId="McpFacetTag" enumTypeId="McpFacetType"
+                            description="Search &amp; Discovery Tag" sequenceNum="20"/>
+    <moqui.basic.Enumeration enumId="McpFacetSecurity" enumTypeId="McpFacetType"
+                            description="Security &amp; HIPAA Classification" sequenceNum="30"/>
+    <moqui.basic.Enumeration enumId="McpFacetDependency" enumTypeId="McpFacetType"
+                            description="Entity / Service Dependency" sequenceNum="40"/>
+    <moqui.basic.Enumeration enumId="McpFacetVector" enumTypeId="McpFacetType"
+                            description="Vector Embedding Descriptor" sequenceNum="50"/>
+
+</entity-facade-xml>

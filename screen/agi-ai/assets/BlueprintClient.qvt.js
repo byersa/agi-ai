@@ -246,7 +246,6 @@
 
             // 2. Selection & ContextBus Identity Attributes
             let mId = activeNode.mariaId || activeNode.id || activeNode.attributes?.name || activeNode.name || '';
-            // If mariaId is just the generic placeholder, override it with the actual field name
             if ((!mId || mId === 'maria_field' || mId === 'field') && (rawAttrs.name || activeNode.name)) {
                 const fName = rawAttrs.name || activeNode.name;
                 mId = (this.context?.selectedMariaId && !this.context.selectedMariaId.includes(fName))
@@ -268,7 +267,7 @@
                     class: finalClass,
                     'data-maria-id': mId || undefined,
                     'mariaid': mId || undefined,
-                    onClick: (e) => this.handleNodeClick(e, activeNode) // Calls handleNodeClick above
+                    onClick: (e) => this.handleNodeClick(e, activeNode)
                 };
             };
 
@@ -283,7 +282,7 @@
                 });
             };
 
-            // 🎯 Render a floating AI action badge (visible on hover or when selected)
+            // Floating AI action badge
             const renderActionBadge = (node) => {
                 const nodeTitle = node.attributes?.name || node.name || node.title || node._moquiTag || 'element';
                 return Vue.h('div', {
@@ -321,11 +320,51 @@
                 ]);
             };
 
-            // 3. TIER 1: Check for explicitly registered custom components (m-screen-layout, m-subscreens-active, etc.)
-            let CustomComp = (explicitType && window.AgiComponents[explicitType])
-                || window.AgiComponents[tag]
-                || (explicitType && Vue.resolveComponent(explicitType))
-                || null;
+            // 3. TIER 1: Check for explicitly registered custom components
+            const isNativeHtmlTag = (t) => ['div', 'span', 'form', 'button', 'label', 'input', 'select', 'textarea', 'p', 'table', 'tr', 'td', 'th'].includes(t);
+
+            // Intercept form-list so IDE doesn't invoke live runtime MFormList
+            if (tag === 'form-list' || explicitType === 'm-form-list' || tag === 'm-form-list') {
+                const fields = childNodes.filter(c => (c._moquiTag === 'field' || c.name === 'field'));
+                return Vue.h(Vue.resolveComponent('q-card'), withSelection({
+                    flat: false,
+                    bordered: true
+                }, 'q-mb-md full-width bg-white rounded-borders shadow-1 relative-position agi-hover-container'), {
+                    default: () => [
+                        renderActionBadge(activeNode),
+                        Vue.h('div', { class: 'bg-blue-grey-1 q-pa-sm text-subtitle2 text-weight-bold row items-center justify-between' }, [
+                            Vue.h('span', `List: ${activeNode.name || 'Data Grid'}`),
+                            Vue.h(Vue.resolveComponent('q-icon'), { name: 'table_view', size: '18px', color: 'blue-grey-6' })
+                        ]),
+                        Vue.h('div', { class: 'q-pa-xs scroll' }, [
+                            Vue.h('table', { class: 'full-width text-left', style: 'border-collapse: collapse;' }, [
+                                Vue.h('thead', [
+                                    Vue.h('tr', { class: 'bg-grey-2 text-caption text-grey-8' }, fields.map(f => {
+                                        const hField = (f.children || []).find(c => c._moquiTag === 'header-field' || c.name === 'header-field');
+                                        const title = hField?.title || hField?.attributes?.title || f.title || f.name || 'Column';
+                                        return Vue.h('th', { class: 'q-pa-sm border-bottom' }, title);
+                                    }))
+                                ]),
+                                Vue.h('tbody', [
+                                    Vue.h('tr', { class: 'text-caption' }, fields.map(f => {
+                                        const dField = (f.children || []).find(c => c._moquiTag === 'default-field' || c.name === 'default-field') || f;
+                                        return Vue.h('td', { class: 'q-pa-sm text-grey-6', style: 'border-bottom: 1px solid #eee;' }, [
+                                            Vue.h(window.AgiComponents['m-blueprint-node'], { node: dField, context: this.context })
+                                        ]);
+                                    }))
+                                ])
+                            ])
+                        ])
+                    ]
+                });
+            }
+
+            let CustomComp = null;
+            if (explicitType && !isNativeHtmlTag(explicitType)) {
+                CustomComp = window.AgiComponents[explicitType] || Vue.resolveComponent(explicitType);
+            } else if (tag && !isNativeHtmlTag(tag)) {
+                CustomComp = window.AgiComponents[tag];
+            }
 
             if (CustomComp && typeof CustomComp !== 'string') {
                 let propsMap = withSelection({ ...rawAttrs });
@@ -364,9 +403,6 @@
                 case 'box-body':
                     return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'q-pa-md column q-gutter-y-sm'), { default: renderChildren });
 
-                case 'form-list':
-                    return Vue.h('div', withSelection({}, 'moqui-form-list q-pa-sm bg-grey-1 rounded-borders border-dashed'), renderChildren());
-
                 case 'field':
                     const fieldIdentifier = rawAttrs.name || activeNode.name || mId;
                     return Vue.h('div', withSelection({
@@ -381,13 +417,27 @@
                 case 'header-field':
                     const fieldTitle = rawAttrs.title || activeNode.title || '';
                     return Vue.h('div', { class: 'column full-width' }, [
-                        // Removed hardcoded 'text-grey-8' to allow --agi-text-main to cascade
                         fieldTitle ? Vue.h('label', {
                             class: 'text-caption text-weight-medium q-mb-xs',
                             style: 'color: var(--agi-text-main);'
                         }, fieldTitle) : null,
                         Vue.h('div', { class: 'full-width' }, renderChildren())
                     ]);
+
+                case 'display-entity':
+                    return Vue.h('span', { class: 'text-caption text-indigo-9 bg-indigo-1 q-px-xs rounded-borders font-mono' },
+                        `[${rawAttrs['entity-name'] || 'Entity'}: ${rawAttrs['text'] || 'Value'}]`
+                    );
+
+                case 'link':
+                case 'm-link':
+                    return Vue.h(Vue.resolveComponent('q-btn'), withSelection({
+                        label: activeNode.text || rawAttrs.text || 'Link',
+                        dense: true,
+                        flat: true,
+                        size: 'sm',
+                        color: 'primary'
+                    }));
 
                 case 'box-header':
                     const headerTitle = rawAttrs.title || activeNode.title || 'Panel';
@@ -432,6 +482,7 @@
                         readonly: true,
                         class: 'bg-white pointer-events-none'
                     });
+
                 case 'submit':
                 case 'm-submit':
                 case 'q-btn':
@@ -451,11 +502,13 @@
                     return Vue.h('div', withSelection({}, `col-12 col-md-${mdSize}`), renderChildren());
 
                 case 'container':
+                case 'div':
                     return Vue.h('div', withSelection({
                         style: rawAttrs.style || ''
                     }, 'moqui-container q-pa-xs'), renderChildren());
 
                 case 'label':
+                case 'span':
                     return Vue.h('div', withSelection({}, rawAttrs.style || 'text-body2 text-grey-9'),
                         rawAttrs.text || (childNodes[0] && typeof childNodes[0] === 'string' ? childNodes[0] : ''));
 
