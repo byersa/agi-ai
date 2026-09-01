@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- MCP SERVICE: GET RESOURCE LIST                                        -->
+    <!-- Scans <component>/mcp/resources/** and merges DB McpResourceFacet data -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="ResourceList" type="inline">
+        <description>
+            Implements standard MCP resources/list by discovering all static and dynamic 
+            resources under component mcp/resources directories and registered DB facets.
+        </description>
+        <in-parameters>
+            <parameter name="category">
+                <description>Filter by top-level category: screen, service, entity, rules, intent, discussion</description>
+            </parameter>
+            <parameter name="targetComponent">
+                <description>Filter by component name (e.g. agi-ide, nursinghome)</description>
+            </parameter>
+            <parameter name="subCategory">
+                <description>Filter by sub-category: archetype, schema, etc.</description>
+            </parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="resources" type="List">
+                <description>List of MCP Resource descriptor maps</description>
+            </parameter>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import java.io.File
+                import java.nio.file.Path
+                import java.nio.file.Paths
+                import groovy.io.FileType
+                import org.moqui.resource.ResourceReference
+
+                List results = []
+                File compBase = new File("runtime/component")
+
+                def getMimeType = { String filename ->
+                    if (filename.endsWith('.xml')) return 'application/xml'
+                    if (filename.endsWith('.json')) return 'application/json'
+                    if (filename.endsWith('.md')) return 'text/markdown'
+                    if (filename.endsWith('.groovy')) return 'text/x-groovy'
+                    if (filename.endsWith('.qvt.js')) return 'application/javascript'
+                    return 'text/plain'
+                }
+
+                if (compBase.exists() && compBase.isDirectory()) {
+                    compBase.eachDir { File compDir ->
+                        String cName = compDir.name
+                        if (targetComponent && cName != targetComponent) return
+
+                        File mcpResourcesDir = new File(compDir, "mcp/resources")
+                        if (mcpResourcesDir.exists() && mcpResourcesDir.isDirectory()) {
+                            Path basePath = mcpResourcesDir.toPath()
+
+                            mcpResourcesDir.eachFileRecurse(FileType.FILES) { File f ->
+                                if (f.name.startsWith(".")) return
+
+                                Path relPath = basePath.relativize(f.toPath())
+                                String relPathStr = relPath.toString().replace('\\', '/')
+                                String[] segments = relPathStr.split('/')
+
+                                String cat = segments.length > 0 ? segments[0] : "general"
+                                String subCat = segments.length > 2 ? segments[1] : ""
+                                String fileName = f.name
+                                String baseName = fileName.replaceAll('\\.[a-zA-Z0-9]+$', '')
+
+                                if (category && cat != category) return
+                                if (subCategory && subCat != subCategory) return
+
+                                String mcpUri = "mcp://${cName}/resources/${relPathStr}"
+                                String compUri = "component://${cName}/mcp/resources/${relPathStr}"
+
+                                // Gather optional DB metadata facets if entity exists
+                                Map metadata = [
+                                    component: cName,
+                                    category: cat,
+                                    subCategory: subCat,
+                                    fileName: fileName,
+                                    baseName: baseName,
+                                    location: compUri
+                                ]
+
+                                try {
+                                    def facetList = ec.entity.find("org.moqui.ai.mcp.McpResourceFacet")
+                                        .condition("resourceUri", mcpUri)
+                                        .list()
+                                    facetList.each { facet ->
+                                        metadata[facet.facetKey] = facet.facetValue
+                                    }
+                                } catch (Exception ignored) {
+                                    // Entity not yet loaded in current migration step
+                                }
+
+                                results.add([
+                                    uri: mcpUri,
+                                    name: baseName,
+                                    description: "${cat.toUpperCase()}${subCat ? ' ' + subCat.toUpperCase() : ''}: ${baseName} (${cName})",
+                                    mimeType: getMimeType(fileName),
+                                    category: cat,
+                                    subCategory: subCat,
+                                    component: cName,
+                                    metadata: metadata
+                                ])
+                            }
+                        }
+                    }
+                }
+
+                context.resources = results
+                ec.logger.info("📦 [get#ResourceList] Discovered ${results.size()} MCP resources")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- MCP SERVICE: GET RESOURCE CONTENT                                     -->
+    <!-- Reads content by MCP URI (Filesystem, WikiPage DB, or McpResource)    -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="ResourceContent" type="inline">
+        <description>
+            Implements standard MCP resources/read by resolving an mcp:// URI 
+            against the filesystem or dynamic database WikiPage / McpResource backends.
+        </description>
+        <in-parameters>
+            <parameter name="uri" required="true">
+                <description>The canonical MCP URI (e.g. mcp://nursinghome/resources/screen/archetype/lookup-modal.xml)</description>
+            </parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="uri"/>
+            <parameter name="contents" type="List">
+                <description>List of MCP content envelopes with text/blob and mimeType</description>
+            </parameter>
+            <parameter name="metadata" type="Map"/>
+            <parameter name="status"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.resource.ResourceReference
+
+                String targetUri = uri.trim()
+                String textContent = null
+                String mimeType = "text/plain"
+                Map metadata = [:]
+
+                def resolveMimeType = { String location ->
+                    if (location.endsWith('.xml')) return 'application/xml'
+                    if (location.endsWith('.json')) return 'application/json'
+                    if (location.endsWith('.md')) return 'text/markdown'
+                    if (location.endsWith('.groovy')) return 'text/x-groovy'
+                    if (location.endsWith('.qvt.js')) return 'application/javascript'
+                    return 'text/plain'
+                }
+
+                // 1. Check DB WikiPage if URI points to intent/ or discussion/
+                if (targetUri.contains('/resources/intent/') || targetUri.contains('/resources/discussion/')) {
+                    String pagePath = targetUri.replaceAll('^mcp://[^/]+/resources/', '')
+                    try {
+                        def wikiPage = ec.entity.find("moqui.resource.wiki.WikiPage")
+                            .condition("pagePath", pagePath)
+                            .one()
+                        if (wikiPage != null) {
+                            def history = ec.entity.find("moqui.resource.wiki.WikiPageHistory")
+                                .condition("wikiPageId", wikiPage.wikiPageId)
+                                .orderBy("-historySequenceNum")
+                                .list()
+                            if (history) {
+                                textContent = history[0].content
+                                mimeType = "text/markdown"
+                                metadata.wikiPageId = wikiPage.wikiPageId
+                                metadata.version = history[0].versionName ?: history[0].historySequenceNum
+                            }
+                        }
+                    } catch (Exception e) {
+                        ec.logger.warn("⚠️ [get#ResourceContent] WikiPage resolution error: ${e.message}")
+                    }
+                }
+
+                // 2. Fallback to physical filesystem under <comp>/mcp/resources/
+                if (textContent == null && targetUri.startsWith("mcp://")) {
+                    String subPath = targetUri.substring(6) // Remove "mcp://"
+                    int slashIdx = subPath.indexOf('/')
+                    if (slashIdx > 0) {
+                        String compName = subPath.substring(0, slashIdx)
+                        String filePath = subPath.substring(slashIdx + 1) // e.g. "resources/screen/archetype/lookup-modal.xml"
+                        String compLocation = "component://${compName}/mcp/${filePath}"
+
+                        ResourceReference rr = ec.resource.getLocationReference(compLocation)
+                        if (rr != null && rr.exists) {
+                            textContent = rr.getText()
+                            mimeType = resolveMimeType(compLocation)
+                            metadata.location = compLocation
+                            metadata.component = compName
+                            metadata.lastModified = rr.getLastModified()
+                        }
+                    }
+                }
+
+                // 3. Attach DB Facets if available
+                try {
+                    def facets = ec.entity.find("org.moqui.ai.mcp.McpResourceFacet")
+                        .condition("resourceUri", targetUri)
+                        .list()
+                    facets.each { f -> metadata[f.facetKey] = f.facetValue }
+                } catch (Exception ignored) {}
+
+                if (textContent != null) {
+                    context.uri = targetUri
+                    context.contents = [[
+                        uri: targetUri,
+                        mimeType: mimeType,
+                        text: textContent
+                    ]]
+                    context.metadata = metadata
+                    context.status = "SUCCESS"
+                    ec.logger.info("📖 [get#ResourceContent] Successfully resolved MCP resource: ${targetUri}")
+                } else {
+                    context.uri = targetUri
+                    context.contents = []
+                    context.metadata = [:]
+                    context.status = "NOT_FOUND"
+                    ec.logger.warn("❌ [get#ResourceContent] Resource not found for URI: ${targetUri}")
+                }
+            ]]></script>
+        </actions>
+    </service>
+
+<!-- ===================================================================== -->
+    <!-- SET RESOURCE FACET                                                    -->
+    <!-- ===================================================================== -->
+    <service verb="set" noun="ResourceFacet" type="inline">
+        <description>Sets or updates a single metadata facet for a given MCP Resource URI.</description>
+        <in-parameters>
+            <parameter name="resourceUri" required="true"/>
+            <parameter name="facetTypeEnumId" default-value="McpFacetMeta"/>
+            <parameter name="facetKey" required="true"/>
+            <parameter name="facetValue"/>
+            <parameter name="wikiPageId"/>
+            <parameter name="wikiPageHistoryId"/>
+            <parameter name="vectorEmbeddingId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="resourceFacetId"/>
+        </out-parameters>
+        <actions>
+            <entity-find entity-name="org.moqui.ai.mcp.McpResourceFacet" list="existingFacets">
+                <econdition field-name="resourceUri" from="resourceUri"/>
+                <econdition field-name="facetKey" from="facetKey"/>
+            </entity-find>
+
+            <if condition="existingFacets">
+                <set field="facet" from="existingFacets[0]"/>
+                <set field="facet.facetValue" from="facetValue"/>
+                <set field="facet.facetTypeEnumId" from="facetTypeEnumId"/>
+                <set field="facet.wikiPageId" from="wikiPageId ?: facet.wikiPageId"/>
+                <set field="facet.wikiPageHistoryId" from="wikiPageHistoryId ?: facet.wikiPageHistoryId"/>
+                <set field="facet.vectorEmbeddingId" from="vectorEmbeddingId ?: facet.vectorEmbeddingId"/>
+                <entity-update value-field="facet"/>
+                <set field="resourceFacetId" from="facet.resourceFacetId"/>
+            <else>
+                <service-call name="create#org.moqui.ai.mcp.McpResourceFacet"
+                              in-map="context" out-map="createResult"/>
+                <set field="resourceFacetId" from="createResult.resourceFacetId"/>
+            </else>
+            </if>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- DELETE RESOURCE FACET                                                 -->
+    <!-- ===================================================================== -->
+    <service verb="delete" noun="ResourceFacet" type="inline">
+        <description>Removes a metadata facet from an MCP resource.</description>
+        <in-parameters>
+            <parameter name="resourceFacetId"/>
+            <parameter name="resourceUri"/>
+            <parameter name="facetKey"/>
+        </in-parameters>
+        <actions>
+            <if condition="resourceFacetId">
+                <entity-delete-by-condition entity-name="org.moqui.ai.mcp.McpResourceFacet">
+                    <econdition field-name="resourceFacetId" from="resourceFacetId"/>
+                </entity-delete-by-condition>
+            <else-if condition="resourceUri &amp;&amp; facetKey">
+                <entity-delete-by-condition entity-name="org.moqui.ai.mcp.McpResourceFacet">
+                    <econdition field-name="resourceUri" from="resourceUri"/>
+                    <econdition field-name="facetKey" from="facetKey"/>
+                </entity-delete-by-condition>
+            </else-if>
+            </if>
+        </actions>
+    </service>
+
+</services>

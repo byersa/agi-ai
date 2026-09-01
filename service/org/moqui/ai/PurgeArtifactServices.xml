@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- PURGE ARTIFACT AND DEPENDENCIES SERVICE                               -->
+    <!-- ===================================================================== -->
+    <service verb="purge" noun="Artifact" authenticate="anonymous-all" type="inline">
+        <description>
+            Cascades and purges an AgiArtifact record along with its WorkspaceBuffer, 
+            AgiArtifactWorkEffort junctions, and related WorkEffort pointers.
+        </description>
+        <in-parameters>
+            <parameter name="artifactPath" type="String" required="true"/> <!-- e.g. "component://nursinghome/screen/nursinghome/Marble.xml" -->
+            <parameter name="deletePhysicalFile" type="Boolean" default="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="purgedArtifactId" type="String"/>
+            <parameter name="status" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                String targetPath = artifactPath.trim()
+
+                // 1. Locate the target AgiArtifact record
+                def art = ec.entity.find("org.moqui.ai.AgiArtifact")
+                        .condition("artifactPath", targetPath)
+                        .one()
+
+                if (!art) {
+                    ec.logger.info("ℹ️ No AgiArtifact found for path: ${targetPath}")
+                    context.status = "NOT_FOUND"
+                    return
+                }
+
+                String artId = art.agiArtifactId
+
+                // 2. Clear WorkspaceBuffer session records bound to this artifact path
+                ec.entity.find("org.moqui.ai.WorkspaceBuffer")
+                        .condition("artifactUri", targetPath)
+                        .deleteAll()
+
+                // 3. Clear AgiArtifactWorkEffort junction records
+                ec.entity.find("org.moqui.ai.AgiArtifactWorkEffort")
+                        .condition("agiArtifactId", artId)
+                        .deleteAll()
+
+                // 4. Disassociate related WorkEfforts by nullifying their agiArtifactId
+                def workEfforts = ec.entity.find("mantle.work.effort.WorkEffort")
+                        .condition("agiArtifactId", artId)
+                        .list()
+
+                workEfforts.each { we ->
+                    we.agiArtifactId = null
+                    we.update()
+                }
+
+                // 5. Delete the primary AgiArtifact record
+                art.delete()
+
+                // 6. Optionally remove physical XML and QVT asset files from disk
+                if (deletePhysicalFile) {
+                    String cleanPath = targetPath.replace("component://", "")
+                    String physicalPath = "runtime/component/" + cleanPath
+                    File xmlFile = new File(physicalPath)
+                    if (xmlFile.exists()) {
+                        xmlFile.delete()
+                        ec.logger.info("🗑️ Deleted physical XML file: ${physicalPath}")
+                    }
+
+                    // Check for companion QVT asset
+                    int lastSlashIdx = physicalPath.lastIndexOf('/')
+                    if (lastSlashIdx != -1) {
+                        String dir = physicalPath.substring(0, lastSlashIdx)
+                        String filename = physicalPath.substring(lastSlashIdx + 1).replace(".xml", ".qvt.js")
+                        File qvtFile = new File("${dir}/assets/${filename}")
+                        if (qvtFile.exists()) {
+                            qvtFile.delete()
+                            ec.logger.info("🗑️ Deleted companion QVT file: ${qvtFile.path}")
+                        }
+                    }
+                }
+
+                ec.logger.info("✅ Cleanly purged AgiArtifact [${artId}] and all dependencies for path: ${targetPath}")
+                context.purgedArtifactId = artId
+                context.status = "SUCCESS"
+            ]]></script>
+        </actions>
+    </service>
+
+</services>

@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- MCP SERVICE: GET TOOL LIST (Schema Reflection)                        -->
+    <!-- Scans <comp>/service/**/mcp/** for Moqui Service XMLs                 -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="ToolList" type="inline">
+        <description>
+            Implements standard MCP tools/list by scanning all active components 
+            for service definitions located in standard Moqui service directories 
+            under service/**/mcp/** and transforming in-parameters into JSON Schema 
+            parameter definitions.
+        </description>
+        <in-parameters>
+            <parameter name="domain">
+                <description>Optional filter by tool domain/verb category</description>
+            </parameter>
+            <parameter name="targetComponent">
+                <description>Optional filter by component name (e.g. agi-ide, nursinghome)</description>
+            </parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="tools" type="List">
+                <description>List of MCP Tool definitions with JSON Schema input definitions</description>
+            </parameter>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import java.io.File
+                import java.nio.file.Path
+                import groovy.io.FileType
+                import groovy.util.Node
+                import groovy.xml.XmlParser
+
+                List toolList = []
+                File compBase = new File("runtime/component")
+
+                def mapMoquiTypeToJsonType = { String type ->
+                    if (!type) return "string"
+                    switch (type.toLowerCase()) {
+                        case 'integer':
+                        case 'long':
+                        case 'biginteger':
+                            return "integer"
+                        case 'number':
+                        case 'float':
+                        case 'double':
+                        case 'bigdecimal':
+                            return "number"
+                        case 'boolean':
+                            return "boolean"
+                        case 'list':
+                            return "array"
+                        case 'map':
+                            return "object"
+                        default:
+                            return "string"
+                    }
+                }
+
+                if (compBase.exists() && compBase.isDirectory()) {
+                    compBase.eachDir { File compDir ->
+                        String cName = compDir.name
+                        if (targetComponent && cName != targetComponent) return
+
+                        File serviceBase = new File(compDir, "service")
+                        if (serviceBase.exists() && serviceBase.isDirectory()) {
+                            Path basePath = serviceBase.toPath()
+
+                            serviceBase.eachFileRecurse(FileType.FILES) { File f ->
+                                if (!f.name.endsWith(".xml") || f.name.startsWith(".")) return
+
+                                Path relPath = basePath.relativize(f.toPath())
+                                String relPathStr = relPath.toString().replace('\\', '/')
+
+                                // Only inspect service files inside an 'mcp' directory
+                                if (!relPathStr.contains("/mcp/") && !relPathStr.startsWith("mcp/")) return
+                                // Exclude the engine scanners to prevent meta-recursion
+                                if (f.name == "McpToolServices.xml" || f.name == "McpResourceServices.xml") return
+
+                                // Derive Moqui service package path (e.g. org.moqui.ai.mcp.MCPScreenServices)
+                                String packagePath = relPathStr.replaceAll('\\.xml$', '').replace('/', '.')
+                                String filenameOnly = f.name.replaceAll('\\.xml$', '')
+
+                                try {
+                                    Node rootNode = new XmlParser(false, false).parse(f)
+                                    if (rootNode.name() == 'services') {
+                                        rootNode.children().each { serviceNode ->
+                                            if (serviceNode instanceof Node && serviceNode.name() == 'service') {
+                                                String verb = serviceNode.attribute('verb') ?: ''
+                                                String noun = serviceNode.attribute('noun') ?: ''
+                                                String localServiceName = "${verb}#${noun}"
+                                                
+                                                // Full Moqui callable name (e.g. org.moqui.ai.mcp.MCPScreenServices.create#Screen)
+                                                String fullServiceName = serviceNode.attribute('name') ?: "${packagePath}.${localServiceName}"
+
+                                                // Derive domain from filename or noun (e.g. MCPScreenServices -> screen)
+                                                String derivedDomain = filenameOnly.toLowerCase().replace("mcp", "").replace("services", "").replace("tools", "")
+                                                if (!derivedDomain) derivedDomain = "general"
+
+                                                if (domain && derivedDomain != domain.toLowerCase()) return
+
+                                                String toolIdentifier = "${cName}__${derivedDomain}__${verb}_${noun}"
+
+                                                String docText = ""
+                                                Node descNode = serviceNode.children().find { it instanceof Node && it.name() == 'description' }
+                                                if (descNode) docText = descNode.text().trim().replaceAll('\\s+', ' ')
+
+                                                Map properties = [:]
+                                                List requiredFields = []
+
+                                                Node inParamsNode = serviceNode.children().find { it instanceof Node && it.name() == 'in-parameters' }
+                                                if (inParamsNode) {
+                                                    inParamsNode.children().each { paramNode ->
+                                                        if (paramNode instanceof Node && paramNode.name() == 'parameter') {
+                                                            String pName = paramNode.attribute('name')
+                                                            String pType = paramNode.attribute('type') ?: 'String'
+                                                            String isReq = paramNode.attribute('required')
+                                                            String pDesc = ""
+
+                                                            Node pDescNode = paramNode.children().find { it instanceof Node && it.name() == 'description' }
+                                                            if (pDescNode) pDesc = pDescNode.text().trim().replaceAll('\\s+', ' ')
+
+                                                            properties[pName] = [
+                                                                type: mapMoquiTypeToJsonType(pType),
+                                                                description: pDesc
+                                                            ]
+
+                                                            if ("true".equalsIgnoreCase(isReq)) {
+                                                                requiredFields.add(pName)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                toolList.add([
+                                                    name: toolIdentifier,
+                                                    description: docText ?: "Moqui service tool ${fullServiceName} in ${cName}",
+                                                    component: cName,
+                                                    domain: derivedDomain,
+                                                    serviceCallName: fullServiceName,
+                                                    filePath: "component://${cName}/service/${relPathStr}",
+                                                    inputSchema: [
+                                                        type: "object",
+                                                        properties: properties,
+                                                        required: requiredFields
+                                                    ]
+                                                ])
+                                            }
+                                        }
+                                    }
+                                } catch (Exception parseEx) {
+                                    ec.logger.warn("⚠️ [get#ToolList] Could not parse tool XML ${f.path}: ${parseEx.message}")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                context.tools = toolList
+                ec.logger.info("🛠️ [get#ToolList] Discovered ${toolList.size()} dynamic MCP tools under component service/ directories")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- MCP SERVICE: CALL TOOL (Dynamic Execution Router)                     -->
+    <!-- ===================================================================== -->
+    <service verb="call" noun="Tool" type="inline">
+        <description>
+            Executes a dynamically discovered MCP tool by resolving its component, 
+            schema definition, and fully qualified Moqui service call path.
+        </description>
+        <in-parameters>
+            <parameter name="name" required="true">
+                <description>The tool identifier, e.g. agi-ide__screen__create_Screen</description>
+            </parameter>
+            <parameter name="arguments" type="Map">
+                <description>The argument map adhering to the tool's inputSchema</description>
+            </parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="content" type="List"/>
+            <parameter name="isError" type="Boolean"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                String toolName = name.trim()
+                Map args = arguments ?: [:]
+                String[] parts = toolName.split('__')
+
+                if (parts.length < 3) {
+                    context.isError = true
+                    context.content = [[
+                        type: "text",
+                        text: "Invalid MCP tool name structure: ${toolName}. Expected format: <component>__<domain>__<verb>_<noun>"
+                    ]]
+                    return
+                }
+
+                String comp = parts[0]
+                String domain = parts[1]
+
+                // Lookup tool definitions to obtain the fully-qualified serviceCallName
+                def toolDefService = ec.service.sync().name("org.moqui.ai.mcp.McpToolServices.get#ToolList")
+                    .parameters([targetComponent: comp, domain: domain])
+                    .call()
+
+                List allTools = toolDefService.tools ?: []
+                Map matchedTool = allTools.find { it.name == toolName }
+
+                if (!matchedTool) {
+                    context.isError = true
+                    context.content = [[
+                        type: "text",
+                        text: "Tool '${toolName}' not found in active component catalogs."
+                    ]]
+                    return
+                }
+
+                try {
+                    String targetService = matchedTool.serviceCallName
+                    ec.logger.info("⚡ [call#Tool] Executing Moqui service: ${targetService} with args: ${args}")
+                    
+                    Map srvResult = ec.service.sync().name(targetService).parameters(args).call()
+                    
+                    context.isError = false
+                    context.content = [[
+                        type: "text",
+                        text: groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(srvResult))
+                    ]]
+                } catch (Exception execEx) {
+                    ec.logger.error("❌ [call#Tool] Error executing tool '${toolName}': ${execEx.message}", execEx)
+                    context.isError = true
+                    context.content = [[
+                        type: "text",
+                        text: "Error executing service for '${toolName}': ${execEx.message}"
+                    ]]
+                }
+            ]]></script>
+        </actions>
+    </service>
+
+</services>

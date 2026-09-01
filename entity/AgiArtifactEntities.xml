@@ -24,9 +24,11 @@
         </relationship>
     </entity>
 
-    <!-- ========================================================= -->
-    <!--  org.moqui.ai - AGI-IDE Artifact & Intent Schema           -->
-    <!-- ========================================================= -->
+    <entity entity-name="ArtifactBlueprint" package="org.moqui.ai" table-name="ARTIFACT_BLUEPRINT">
+        <field name="artifactPath" type="id-long" is-pk="true"/>
+        <field name="metaJsonData" type="text-long"/>
+        <field name="lastUpdatedBy" type="id"/>
+    </entity>
 
     <!-- Primary Domain Entity: AgiArtifact -->
     <entity entity-name="AgiArtifact" package="org.moqui.ai" table-name="AGI_ARTIFACT">

@@ -1,24 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <resource xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/rest-api-3.xsd"
-          name="agi-ai" displayName="Moqui MCP REST API" version="1.0"
-          require-authentication="anonymous-all">
-          
-    <!-- 🎯 require-authentication="anonymous-all" completely bypasses the Artifact Authz check for all nested child routes -->
-    <resource name="tools">
-        <method type="get">
-            <service name="org.moqui.ai.AgiMcpBridgeServices.list#Tools"/>
-        </method>
-        <method type="post">
-            <service name="McpServices.mcp#ToolsCall"/>
-        </method>
+          name="agi-ai" version="s1" require-csrf="false" require-authentication="false">
+
+    <!-- MCP Protocol Endpoints -->
+    <resource name="mcp">
+        <resource name="resources">
+            <method type="get"><service name="org.moqui.ai.mcp.McpResourceServices.get#ResourceList"/></method>
+            <resource name="content">
+                <method type="get"><service name="org.moqui.ai.mcp.McpResourceServices.get#ResourceContent"/></method>
+            </resource>
+            <resource name="facet">
+                <method type="post"><service name="org.moqui.ai.mcp.McpResourceServices.set#ResourceFacet"/></method>
+                <method type="delete"><service name="org.moqui.ai.mcp.McpResourceServices.delete#ResourceFacet"/></method>
+            </resource>
+        </resource>
+        <resource name="tools">
+            <method type="get"><service name="org.moqui.ai.mcp.McpToolServices.get#ToolList"/></method>
+            <resource name="call">
+                <method type="post"><service name="org.moqui.ai.mcp.McpToolServices.call#Tool"/></method>
+            </resource>
+        </resource>
+        <resource name="runService">
+            <method type="post"><service name="org.moqui.ai.AgiServiceServices.run#Service"/></method>
+        </resource>
     </resource>
 
-    <resource name="mcp">
-        <resource name="run">
-            <method type="post">
-                <service name="org.moqui.ai.AgiMcpBridgeServices.run#Tool"/>
-            </method>
-        </resource>
+    <!-- RAG & Agent Proxy Endpoints -->
+    <resource name="preprocessRagContext">
+        <method type="post"><service name="org.moqui.ai.AgiRagServices.preprocess#RagContext"/></method>
+    </resource>
+    <resource name="executeStagedAgentTurn">
+        <method type="post"><service name="org.moqui.ai.AgiRagServices.execute#StagedAgentTurn"/></method>
     </resource>
 </resource>

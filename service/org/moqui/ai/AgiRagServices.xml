@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <service verb="preprocess" noun="RagContext" type="script" location="component://agi-ai/script/PreprocessRagContext.groovy">
+        <description>Dynamically inspects Entity metadata and conventions to build RAG context.</description>
+        <in-parameters>
+            <parameter name="artifactUri"/>
+            <parameter name="prompt" required="true"/>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="contextItems" type="List"/>
+        </out-parameters>
+    </service>
+
+    <service verb="execute" noun="StagedAgentTurn" type="script" location="component://agi-ai/script/ExecuteStagedAgentTurn.groovy">
+        <description>Executes confirmed staged agent turn, unpacks MCP blueprints/tools, and stages artifacts in buffer.</description>
+        <in-parameters>
+            <parameter name="userPrompt" type="String" allow-html="any" required="true"/>
+            <parameter name="adHocPrompt" type="String" allow-html="any"/>
+            <parameter name="targetComponent" type="String" default-value="nursinghome"/>
+            <parameter name="artifactUri" type="String"/>
+            <parameter name="focusCoordinate" type="String"/>
+            <parameter name="focusCoordinateArray" type="List"/>
+            <parameter name="mcpTool" type="String"/>
+            <parameter name="mcpParams" type="Map"/>
+            <parameter name="selectedArchetypes" type="List"/>
+            <parameter name="selectedIntents" type="List"/>
+            <parameter name="ragContext" type="List"/>
+            <parameter name="rawXmlContent" type="String" allow-html="any"/>
+            <parameter name="activeRagContext" type="String" allow-html="any"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="completionText" type="String"/>
+            <parameter name="createdArtifactUri" type="String"/>
+            <parameter name="rawXmlContent" type="String"/>
+            <parameter name="message" type="String"/>
+            <parameter name="status" type="String"/>
+            <parameter name="isDraft" type="Boolean"/>
+            <parameter name="filesGenerated" type="List"/>
+        </out-parameters>
+    </service>
+
+</services>
