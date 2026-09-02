@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- SYNC COMPONENT MCP DIRECTORY (File -> DB Hydration)                   -->
+    <!-- ===================================================================== -->
+    <service verb="sync" noun="ComponentMcpDirectory" type="inline">
+        <description>
+            Scans runtime/component/{targetComponent}/mcp/ and synchronizes YAML intent DAGs, 
+            Markdown discussion notes, and test manifests into WorkEffort, WikiPage, and AgiPayload entities.
+        </description>
+        <in-parameters>
+            <parameter name="targetComponent" default-value="nursinghome" required="true"/>
+            <parameter name="forceOverwrite" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="syncedIntentsCount" type="Integer"/>
+            <parameter name="syncedWikiPagesCount" type="Integer"/>
+            <parameter name="syncedManifestsCount" type="Integer"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.yaml.snakeyaml.Yaml
+                import groovy.json.JsonOutput
+                import java.security.MessageDigest
+
+                int intentsCount = 0
+                int wikiCount = 0
+                int manifestsCount = 0
+
+                String compDir = "runtime/component/${targetComponent}/mcp"
+                File mcpRoot = new File(compDir)
+                if (!mcpRoot.exists() || !mcpRoot.isDirectory()) {
+                    ec.logger.info("ℹ️ [McpSyncServices] No mcp/ directory found for component: ${targetComponent}")
+                    context.syncedIntentsCount = 0
+                    context.syncedWikiPagesCount = 0
+                    context.syncedManifestsCount = 0
+                    return
+                }
+
+                Yaml yamlParser = new Yaml()
+
+                // 1. Synchronize Structured Intent DAGs (*.intent.yaml -> WorkEffort + AgiArtifact)
+                File intentsDir = new File(mcpRoot, "intents")
+                if (intentsDir.exists() && intentsDir.isDirectory()) {
+                    intentsDir.eachFileMatch(~/.*\.intent\.ya?ml/) { File f ->
+                        try {
+                            Map intentMap = yamlParser.load(f.text) as Map
+                            if (!intentMap) return
+
+                            String artUri = intentMap.artifactUri
+                            String mariaId = intentMap.mariaId
+                            List intentsList = intentMap.intents ?: []
+
+                            // Ensure AgiArtifact exists
+                            def artVal = null
+                            if (artUri) {
+                                artVal = ec.entity.find("org.moqui.ai.AgiArtifact").condition("artifactPath", artUri).one()
+                                if (!artVal) {
+                                    artVal = ec.entity.makeValue("org.moqui.ai.AgiArtifact")
+                                    artVal.artifactPath = artUri
+                                    artVal.artifactStatusEnumId = intentMap.status ?: "AasDraft"
+                                    artVal.setSequencedIdPrimary()
+                                    artVal.create()
+                                }
+                            }
+
+                            // Walk Intent Graph Nodes
+                            intentsList.each { Map node ->
+                                String nodeName = node.name ?: "Intent Step"
+                                String weType = node.type ?: "WetIntent"
+                                String nodeStatus = node.status ?: "WeInPlanning"
+
+                                def existingWe = ec.entity.find("mantle.work.effort.WorkEffort")
+                                    .condition("sourceReferenceId", artUri)
+                                    .condition("workEffortName", nodeName)
+                                    .one()
+
+                                if (!existingWe) {
+                                    Map weResult = ec.service.sync().name("org.moqui.ide.BlueprintServices.create#WorkEffortNode").parameters([
+                                        workEffortName: nodeName,
+                                        agiArtifactId: artVal?.agiArtifactId,
+                                        sourceReferenceId: artUri,
+                                        workEffortTypeEnumId: weType,
+                                        targetMariaId: mariaId
+                                    ]).call()
+
+                                    if (weResult.workEffortId) {
+                                        def createdWe = ec.entity.find("mantle.work.effort.WorkEffort").condition("workEffortId", weResult.workEffortId).one()
+                                        createdWe.statusId = nodeStatus
+                                        createdWe.update()
+                                    }
+                                } else if (forceOverwrite) {
+                                    existingWe.statusId = nodeStatus
+                                    existingWe.update()
+                                }
+                                intentsCount++
+                            }
+                        } catch (Exception ex) {
+                            ec.logger.error("❌ [McpSyncServices] Failed parsing intent file ${f.name}: ${ex.message}")
+                        }
+                    }
+                }
+
+                // 2. Synchronize Narrative Markdown Discussions (*.notes.md / *.md -> WikiPage)
+                if (intentsDir.exists() && intentsDir.isDirectory()) {
+                    intentsDir.eachFileMatch(~/.*\.notes\.md/) { File f ->
+                        try {
+                            String pageName = f.name.replace(".notes.md", "")
+                            String wikiSpaceId = "${targetComponent.toUpperCase()}_INTENTS"
+                            String markdownContent = f.text
+
+                            // Ensure WikiSpace exists
+                            def spaceVal = ec.entity.find("moqui.resource.wiki.WikiSpace").condition("wikiSpaceId", wikiSpaceId).one()
+                            if (!spaceVal) {
+                                spaceVal = ec.entity.makeValue("moqui.resource.wiki.WikiSpace")
+                                spaceVal.wikiSpaceId = wikiSpaceId
+                                spaceVal.description = "Architecture & Intent ADR Space for ${targetComponent}"
+                                spaceVal.create()
+                            }
+
+                            def wikiPage = ec.entity.find("moqui.resource.wiki.WikiPage")
+                                .condition("wikiSpaceId", wikiSpaceId)
+                                .condition("pagePath", pageName)
+                                .one()
+
+                            if (!wikiPage) {
+                                wikiPage = ec.entity.makeValue("moqui.resource.wiki.WikiPage")
+                                wikiPage.setSequencedIdPrimary()
+                                wikiPage.wikiSpaceId = wikiSpaceId
+                                wikiPage.pagePath = pageName
+                                wikiPage.createdDate = ec.user.nowTimestamp
+                                wikiPage.create()
+
+                                def pageHist = ec.entity.makeValue("moqui.resource.wiki.WikiPageHistory")
+                                pageHist.setSequencedIdPrimary()
+                                pageHist.wikiPageId = wikiPage.wikiPageId
+                                pageHist.userId = ec.user.userId ?: "EX_JOHN_DOE"
+                                pageHist.changeDateTime = ec.user.nowTimestamp
+                                pageHist.content = markdownContent
+                                pageHist.create()
+                                wikiCount++
+                            } else if (forceOverwrite) {
+                                def pageHist = ec.entity.makeValue("moqui.resource.wiki.WikiPageHistory")
+                                pageHist.setSequencedIdPrimary()
+                                pageHist.wikiPageId = wikiPage.wikiPageId
+                                pageHist.userId = ec.user.userId ?: "EX_JOHN_DOE"
+                                pageHist.changeDateTime = ec.user.nowTimestamp
+                                pageHist.content = markdownContent
+                                pageHist.create()
+                                wikiCount++
+                            }
+                        } catch (Exception ex) {
+                            ec.logger.error("❌ [McpSyncServices] Failed parsing wiki markdown ${f.name}: ${ex.message}")
+                        }
+                    }
+                }
+
+                // 3. Synchronize Test Manifests (manifests/*.yaml -> AgiPayload)
+                File manifestsDir = new File(mcpRoot, "manifests")
+                if (manifestsDir.exists() && manifestsDir.isDirectory()) {
+                    manifestsDir.eachFileMatch(~/.*\.ya?ml/) { File f ->
+                        try {
+                            Map manifestMap = yamlParser.load(f.text) as Map
+                            if (!manifestMap) return
+
+                            String title = manifestMap.title ?: f.name.replace(".yaml", "")
+                            String targetUri = manifestMap.targetArtifactUri ?: manifestMap.artifactUri
+
+                            def existingPld = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                .condition("title", title)
+                                .condition("modeEnumId", "AamTest")
+                                .one()
+
+                            if (!existingPld || forceOverwrite) {
+                                ec.service.sync().name("org.moqui.ai.mcp.McpPayloadServices.process#Payload").parameters([
+                                    agiPayloadId: existingPld?.agiPayloadId,
+                                    mode: "test",
+                                    targetComponent: targetComponent,
+                                    artifactUri: targetUri,
+                                    title: title,
+                                    payload: manifestMap
+                                ]).call()
+                                manifestsCount++
+                            }
+                        } catch (Exception ex) {
+                            ec.logger.error("❌ [McpSyncServices] Failed importing manifest ${f.name}: ${ex.message}")
+                        }
+                    }
+                }
+
+                context.syncedIntentsCount = intentsCount
+                context.syncedWikiPagesCount = wikiCount
+                context.syncedManifestsCount = manifestsCount
+                ec.logger.info("✅ [McpSyncServices] Hydrated ${targetComponent}: ${intentsCount} intents, ${wikiCount} wiki notes, ${manifestsCount} manifests.")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- EXPORT ARTIFACT MCP YAML (DB -> File Serialization)                  -->
+    <!-- ===================================================================== -->
+    <service verb="export" noun="ArtifactMcpYaml" type="inline">
+        <description>
+            Exports database WorkEffort DAG nodes, discussion WikiPages, and facets
+            for a specific AgiArtifact into standard YAML and Markdown files in component/mcp/.
+        </description>
+        <in-parameters>
+            <parameter name="artifactUri" required="true"/>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="yamlFilePath" type="String"/>
+            <parameter name="markdownFilePath" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.yaml.snakeyaml.Yaml
+                import org.yaml.snakeyaml.DumperOptions
+
+                def artVal = ec.entity.find("org.moqui.ai.AgiArtifact").condition("artifactPath", artifactUri).one()
+                if (!artVal) {
+                    ec.message.addError("AgiArtifact not found for URI: ${artifactUri}")
+                    return
+                }
+
+                String simpleName = artifactUri.replaceAll(/.*\/|\.xml$/, "")
+                String outDir = "runtime/component/${targetComponent}/mcp/intents"
+                File targetFolder = new File(outDir)
+                targetFolder.mkdirs()
+
+                // 1. Gather all attached WorkEfforts
+                def weList = ec.entity.find("mantle.work.effort.WorkEffort")
+                    .condition("sourceReferenceId", artifactUri)
+                    .list()
+
+                List intentNodes = []
+                weList.each { we ->
+                    intentNodes.add([
+                        id: we.workEffortId,
+                        name: we.workEffortName,
+                        type: we.workEffortTypeEnumId ?: "WetIntent",
+                        status: we.statusId ?: "WeInPlanning",
+                        targetMariaId: we.targetMariaId
+                    ])
+                }
+
+                Map yamlStructure = [
+                    artifactUri: artifactUri,
+                    status: artVal.artifactStatusEnumId ?: "AasDraft",
+                    totalIntents: artVal.totalIntentCount ?: intentNodes.size(),
+                    completedIntents: artVal.completedIntentCount ?: 0,
+                    intents: intentNodes
+                ]
+
+                DumperOptions options = new DumperOptions()
+                options.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK)
+                options.setPrettyFlow(true)
+                Yaml yamlWriter = new Yaml(options)
+
+                File yamlOutFile = new File(targetFolder, "${simpleName}.intent.yaml")
+                yamlOutFile.text = yamlWriter.dump(yamlStructure)
+
+                // 2. Export Wiki Narrative if present
+                String wikiSpaceId = "${targetComponent.toUpperCase()}_INTENTS"
+                def wikiPage = ec.entity.find("moqui.resource.wiki.WikiPage")
+                    .condition("wikiSpaceId", wikiSpaceId)
+                    .condition("pagePath", simpleName)
+                    .one()
+
+                File mdOutFile = null
+                if (wikiPage) {
+                    def histList = ec.entity.find("moqui.resource.wiki.WikiPageHistory")
+                        .condition("wikiPageId", wikiPage.wikiPageId)
+                        .orderBy("-changeDateTime")
+                        .list()
+
+                    if (histList) {
+                        mdOutFile = new File(targetFolder, "${simpleName}.notes.md")
+                        mdOutFile.text = histList[0].content ?: ""
+                    }
+                }
+
+                context.yamlFilePath = yamlOutFile.path
+                context.markdownFilePath = mdOutFile?.path
+                ec.logger.info("📄 [McpSyncServices] Exported DB entities to disk: ${yamlOutFile.path}")
+            ]]></script>
+        </actions>
+    </service>
+
+</services>

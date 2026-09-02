@@ -33,4 +33,21 @@
     <resource name="executeStagedAgentTurn">
         <method type="post"><service name="org.moqui.ai.AgiRagServices.execute#StagedAgentTurn"/></method>
     </resource>
+
+    <!-- AgiPayload FSM Pipeline Endpoints -->
+    <resource name="payload">
+        <method type="post"><service name="org.moqui.ai.mcp.McpPayloadServices.process#Payload"/></method>
+        <resource name="detail">
+            <method type="get"><service name="org.moqui.ai.mcp.McpPayloadServices.get#Payload"/></method>
+        </resource>
+    </resource>
+    <!-- Dual-Layer MCP File/DB Synchronization -->
+    <resource name="sync">
+        <resource name="component">
+            <method type="post"><service name="org.moqui.ai.mcp.McpSyncServices.sync#ComponentMcpDirectory"/></method>
+        </resource>
+        <resource name="exportArtifact">
+            <method type="post"><service name="org.moqui.ai.mcp.McpSyncServices.export#ArtifactMcpYaml"/></method>
+        </resource>
+    </resource>
 </resource>

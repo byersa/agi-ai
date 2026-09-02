@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- PROCESS PAYLOAD (Unified FSM Pipeline Dispatcher)                     -->
+    <!-- ===================================================================== -->
+    <service verb="process" noun="Payload" type="inline">
+        <description>
+            Central dispatcher validating, storing, and executing AgiPayload envelopes 
+            according to the selected Assist Mode.
+        </description>
+        <in-parameters>
+            <parameter name="agiPayloadId"/>
+            <parameter name="mode" default-value="plan" required="true"/>
+            <parameter name="targetComponent" default-value="nursinghome" required="true"/>
+            <parameter name="artifactUri"/>
+            <parameter name="targetMariaId"/>
+            <parameter name="title"/>
+            <parameter name="userPromptText"/>
+            <parameter name="payload" type="Map"/>
+            <parameter name="facets" type="Map"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="agiPayloadId" type="String" required="true"/>
+            <parameter name="statusId" type="String" required="true"/>
+            <parameter name="workEffortId" type="String"/>
+            <parameter name="executionResult" type="Map"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import groovy.json.JsonSlurper
+                import groovy.json.JsonOutput
+                import java.security.MessageDigest
+
+                // 1. Map mode string to enumId
+                Map modeMap = [
+                    'plan': 'AamPlan', 'build': 'AamBuild', 'orchestrate': 'AamOrchestrate',
+                    'test': 'AamTest', 'query': 'AamQuery', 'history': 'AamHistory', 'discuss': 'AamDiscuss'
+                ]
+                String modeEnumId = modeMap.get(mode.toLowerCase()) ?: 'AamPlan'
+
+                // 2. Normalize and compute content hash
+                Map rawPayloadMap = payload ?: [:]
+                if (userPromptText) rawPayloadMap.userPromptText = userPromptText
+                String payloadJsonStr = JsonOutput.toJson(rawPayloadMap)
+
+                MessageDigest md = MessageDigest.getInstance("SHA-256")
+                String sha256Hex = md.digest(payloadJsonStr.getBytes("UTF-8")).encodeHex().toString()
+
+                // 3. Resolve or create AgiArtifact
+                String artId = null
+                if (artifactUri) {
+                    def artVal = ec.entity.find("org.moqui.ai.AgiArtifact").condition("artifactPath", artifactUri).one()
+                    if (!artVal) {
+                        artVal = ec.entity.makeValue("org.moqui.ai.AgiArtifact")
+                        artVal.artifactPath = artifactUri
+                        artVal.artifactStatusEnumId = "AasDraft"
+                        artVal.setSequencedIdPrimary()
+                        artVal.create()
+                    }
+                    artId = artVal.agiArtifactId
+                }
+
+                // 4. Create or Update AgiPayload entity
+                def payloadVal = agiPayloadId ? ec.entity.find("org.moqui.ai.payload.AgiPayload").condition("agiPayloadId", agiPayloadId).one() : null
+                if (!payloadVal) {
+                    payloadVal = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                    payloadVal.setSequencedIdPrimary()
+                    payloadVal.createdDate = ec.user.nowTimestamp
+                    payloadVal.statusId = "PlsDraft"
+                } else {
+                    payloadVal.revisionNumber = (payloadVal.revisionNumber ?: 1) + 1
+                }
+
+                payloadVal.modeEnumId = modeEnumId
+                payloadVal.targetComponent = targetComponent
+                payloadVal.artifactUri = artifactUri
+                payloadVal.targetMariaId = targetMariaId
+                payloadVal.agiArtifactId = artId
+                payloadVal.title = title ?: (userPromptText ? (userPromptText.length() > 50 ? userPromptText.substring(0, 47) + "..." : userPromptText) : "Untitled Payload")
+                payloadVal.userPromptText = userPromptText
+                payloadVal.payloadJsonData = payloadJsonStr
+                payloadVal.contentSha256 = sha256Hex
+                payloadVal.lastUpdatedStamp = ec.user.nowTimestamp
+
+                // 5. Contextual Intent Promotion: Map Prompt -> WorkEffort Intent Node
+                if (["AamBuild", "AamTest", "AamDiscuss"].contains(modeEnumId) && artId) {
+                    String weType = modeEnumId == "AamDiscuss" ? "WetDiscussion" : "WetIntent"
+                    String safeMariaId = targetMariaId ?: (artifactUri ? org.moqui.ide.ScreenEditorServices.generateMariaId(artifactUri, "root") : null)
+
+                    Map weResult = ec.service.sync().name("org.moqui.ide.BlueprintServices.create#WorkEffortNode").parameters([
+                        workEffortName: payloadVal.title,
+                        agiArtifactId: artId,
+                        sourceReferenceId: artifactUri,
+                        workEffortTypeEnumId: weType,
+                        targetMariaId: safeMariaId
+                    ]).call()
+
+                    payloadVal.workEffortId = weResult.workEffortId
+                }
+
+                payloadVal.createOrUpdate()
+                context.agiPayloadId = payloadVal.agiPayloadId
+                context.workEffortId = payloadVal.workEffortId
+
+                // 6. Persist key-value Facets
+                if (facets instanceof Map) {
+                    facets.each { k, v ->
+                        if (k && v != null) {
+                            def facetVal = ec.entity.makeValue("org.moqui.ai.payload.AgiPayloadFacet")
+                            facetVal.setSequencedIdPrimary()
+                            facetVal.agiPayloadId = payloadVal.agiPayloadId
+                            facetVal.facetKey = k.toString()
+                            facetVal.facetValue = v.toString()
+                            facetVal.create()
+                        }
+                    }
+                }
+
+                // 7. Mode-Specific Pipeline Execution
+                Map execResult = [:]
+                if (modeEnumId == "AamBuild") {
+                    // Execute staged AST mutation if present in payload
+                    if (rawPayloadMap.stagedAstMutation && artifactUri) {
+                        payloadVal.statusId = "PlsExecuting"
+                        payloadVal.update()
+
+                        String astJson = JsonOutput.toJson(rawPayloadMap.stagedAstMutation)
+                        ec.service.sync().name("org.moqui.ide.AgiWorkspaceServices.store#WorkspaceBuffer")
+                            .parameters([artifactUri: artifactUri, metaJsonBuffer: astJson])
+                            .call()
+                        ec.service.sync().name("org.moqui.ide.AgiWorkspaceServices.save#ScreenXml")
+                            .parameters([artifactUri: artifactUri, metaJsonBuffer: astJson])
+                            .call()
+
+                        payloadVal.statusId = "PlsCommitted"
+                        execResult.status = "SUCCESS"
+                        execResult.message = "Successfully applied AST mutation to ${artifactUri}"
+                    } else {
+                        payloadVal.statusId = "PlsStaged"
+                        execResult.status = "STAGED"
+                        execResult.message = "Build payload staged for AI assistant code generation."
+                    }
+                } else if (modeEnumId == "AamTest") {
+                    payloadVal.statusId = "PlsStaged"
+                    execResult.status = "READY"
+                    execResult.message = "Test payload ready for execution in test harness."
+                } else {
+                    payloadVal.statusId = "PlsDraft"
+                    execResult.status = "RECORDED"
+                    execResult.message = "Payload context and intent saved."
+                }
+
+                payloadVal.executionResultJson = JsonOutput.toJson(execResult)
+                payloadVal.update()
+
+                context.statusId = payloadVal.statusId
+                context.executionResult = execResult
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- GET PAYLOAD DETAILS                                                   -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="Payload" type="inline">
+        <in-parameters>
+            <parameter name="agiPayloadId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="payloadDetails" type="Map"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import groovy.json.JsonSlurper
+
+                def pld = ec.entity.find("org.moqui.ai.payload.AgiPayload").condition("agiPayloadId", agiPayloadId).one()
+                if (!pld) {
+                    ec.message.addError("AgiPayload not found for ID: ${agiPayloadId}")
+                    return
+                }
+
+                Map outMap = pld.getMap()
+                if (pld.payloadJsonData) {
+                    try {
+                        outMap.payload = new JsonSlurper().parseText(pld.payloadJsonData)
+                    } catch (Exception ignore) {}
+                }
+                if (pld.executionResultJson) {
+                    try {
+                        outMap.executionResult = new JsonSlurper().parseText(pld.executionResultJson)
+                    } catch (Exception ignore) {}
+                }
+
+                def facets = ec.entity.find("org.moqui.ai.payload.AgiPayloadFacet").condition("agiPayloadId", agiPayloadId).list()
+                outMap.facets = facets.collectEntries { [(it.facetKey): it.facetValue] }
+
+                context.payloadDetails = outMap
+            ]]></script>
+        </actions>
+    </service>
+
+</services>

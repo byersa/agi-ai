@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mcp-component-schema xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                      target-component="nursinghome" version="1.0.0">
+
+    <!-- 1. Structured Intent DAGs: Syncs to WorkEffort & AgiArtifact -->
+    <sync-rule directory="intents" file-pattern="*.intent.yaml"
+               entity-root="mantle.work.effort.WorkEffort"
+               adapter="org.moqui.ai.mcp.sync.WorkEffortYamlAdapter"
+               conflict-strategy="file-overwrites-db-on-startup"/>
+
+    <!-- 2. Narrative Discussion & Intent Notes: Syncs to WikiPage -->
+    <sync-rule directory="intents" file-pattern="*.notes.md"
+               entity-root="moqui.resource.wiki.WikiPage"
+               adapter="org.moqui.ai.mcp.sync.WikiPageMarkdownAdapter"
+               wiki-space-id="NURSING_INTENTS"
+               conflict-strategy="newer-timestamp-wins"/>
+
+    <!-- 3. Test & Replay Manifests: Syncs to Test Engine -->
+    <sync-rule directory="manifests" file-pattern="*.yaml"
+               entity-root="org.moqui.ai.AgiTestManifest"
+               adapter="org.moqui.ai.mcp.sync.TestManifestAdapter"
+               conflict-strategy="file-overwrites-db-on-startup"/>
+
+    <!-- 4. Prompts: Syncs to McpPrompt & WikiPage -->
+    <sync-rule directory="prompts" file-pattern="*.md"
+               entity-root="moqui.resource.wiki.WikiPage"
+               wiki-space-id="MCP_PROMPTS"
+               adapter="org.moqui.ai.mcp.sync.WikiPageMarkdownAdapter"
+               conflict-strategy="file-overwrites-db-on-startup"/>
+</mcp-component-schema>

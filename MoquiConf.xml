@@ -1,10 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <moqui-conf xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-             xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-4.0.xsd">
-
-    <after-init-list>
-        <after-init name="AgiAdkLifecycleBinding" location="component://agi-ai/script/AgiAdkLifecycleBinding.groovy"/>
-    </after-init-list>
+            xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-4.0.xsd">
 
     <screen-facade>
         <screen location="component://webroot/screen/webroot.xml" require-authentication="false">
@@ -12,13 +8,6 @@
                              location="component://agi-ai/screen/agi-ai.xml"/>
             <subscreens-item name="agi-ai-assets" menu-title="AGI AI Assets" menu-index="98"
                              menu-include="false" location="component://agi-ai/screen/agi-ai/assets.xml"/>
-            
-            <subscreens-item name="mcp" menu-include="false" 
-                             location="component://moqui-mcp-2/screen/McpTestScreen.xml"/>
-            <subscreens-item name="sse" menu-include="false" 
-                             location="component://moqui-mcp-2/screen/McpTestScreen.xml"/>
-            <subscreens-item name="message" menu-include="false" 
-                             location="component://moqui-mcp-2/screen/McpTestScreen.xml"/>
         </screen>
 
         <screen-output type="qjson" mime-type="application/json" always-standalone="false"
@@ -29,11 +18,6 @@
         <webapp name="webroot">
             <endpoint path="/agi-ws/{channel}" class="org.moqui.ai.AgiWebSocketEndpoint" timeout="3600000" enabled="true"/>
 
-            <after-startup>
-                <actions>
-                    <script location="component://agi-ai/script/AgiAdkLifecycleBinding.groovy"/>
-                </actions>
-            </after-startup>
         </webapp>
     </webapp-list>
 

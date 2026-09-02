@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-3.xsd">
+
+    <entity entity-name="AgiPayload" package="org.moqui.ai.payload" enable-audit-log="true">
+        <description>
+            Polymorphic execution envelope for AI Assist Modes (plan, build, orchestrate, test, query, history, discuss).
+            Acts as the state transition record linking raw user prompts, structured AI intents, and physical AST mutations.
+        </description>
+        <field name="agiPayloadId" type="id" is-pk="true"/>
+        <field name="modeEnumId" type="id" not-null="true"/>
+        <field name="statusId" type="id" default="PlsDraft"/>
+        
+        <!-- Context & Coordination Coordinates -->
+        <field name="targetComponent" type="text-short" not-null="true"/>
+        <field name="artifactUri" type="text-medium"/>
+        <field name="targetMariaId" type="id-long"/>
+        <field name="agiArtifactId" type="id"/>
+        
+        <!-- Mantle & Wiki Associations -->
+        <field name="workEffortId" type="id"/>
+        <field name="wikiPageId" type="id"/>
+        <field name="parentPayloadId" type="id"/>
+        
+        <!-- Raw Prompt / Faceted Intent Content -->
+        <field name="title" type="text-medium"/>
+        <field name="userPromptText" type="text-long"/>
+        <field name="payloadJsonData" type="text-very-long"/>
+        <field name="executionResultJson" type="text-very-long"/>
+        
+        <!-- Telemetry & Revision Locks -->
+        <field name="revisionNumber" type="number-integer" default="1"/>
+        <field name="contentSha256" type="text-short"/>
+        <field name="createdDate" type="date-time"/>
+        <field name="lastUpdatedStamp" type="date-time"/>
+
+        <!-- Relationships -->
+        <relationship type="one" title="Mode" related="moqui.basic.Enumeration">
+            <key-map field-name="modeEnumId" related="enumId"/>
+        </relationship>
+        <relationship type="one" title="Status" related="moqui.basic.StatusItem">
+            <key-map field-name="statusId" related="statusId"/>
+        </relationship>
+        <relationship type="one" related="org.moqui.ai.AgiArtifact">
+            <key-map field-name="agiArtifactId"/>
+        </relationship>
+        <relationship type="one" related="mantle.work.effort.WorkEffort">
+            <key-map field-name="workEffortId"/>
+        </relationship>
+        <relationship type="one" related="moqui.resource.wiki.WikiPage">
+            <key-map field-name="wikiPageId"/>
+        </relationship>
+        <relationship type="one" title="Parent" related="org.moqui.ai.payload.AgiPayload">
+            <key-map field-name="parentPayloadId" related="agiPayloadId"/>
+        </relationship>
+
+        <index name="AGI_PLD_URI"><index-field name="artifactUri"/></index>
+        <index name="AGI_PLD_WE"><index-field name="workEffortId"/></index>
+        <index name="AGI_PLD_MODE"><index-field name="modeEnumId"/></index>
+
+        <seed-data>
+        
+            <!-- Assist Mode Enumerations -->
+            <moqui.basic.EnumerationType enumTypeId="AgiAssistMode" description="AGI AI Assist Interaction Modes"/>
+            <moqui.basic.Enumeration enumId="AamPlan" enumTypeId="AgiAssistMode" enumCode="plan" description="Plan Mode (Ad-hoc Prompting)"/>
+            <moqui.basic.Enumeration enumId="AamBuild" enumTypeId="AgiAssistMode" enumCode="build" description="Build Mode (Direct Artifact Mutation)"/>
+            <moqui.basic.Enumeration enumId="AamOrchestrate" enumTypeId="AgiAssistMode" enumCode="orchestrate" description="Orchestrate Mode (Large Model Workflow)"/>
+            <moqui.basic.Enumeration enumId="AamTest" enumTypeId="AgiAssistMode" enumCode="test" description="Test Mode (Lifecycle Assertions)"/>
+            <moqui.basic.Enumeration enumId="AamQuery" enumTypeId="AgiAssistMode" enumCode="query" description="Query Mode (Analysis &amp; Reporting)"/>
+            <moqui.basic.Enumeration enumId="AamHistory" enumTypeId="AgiAssistMode" enumCode="history" description="History Mode (Audit &amp; Pruning)"/>
+            <moqui.basic.Enumeration enumId="AamDiscuss" enumTypeId="AgiAssistMode" enumCode="discuss" description="Discuss Mode (Intent &amp; ADR Synthesis)"/>
+        
+            <!-- Payload Lifecycle Status -->
+            <moqui.basic.StatusType statusTypeId="AgiPayloadStatus" description="AGI Payload Execution Status"/>
+            <moqui.basic.StatusItem statusId="PlsDraft" statusTypeId="AgiPayloadStatus" statusCode="DRAFT" description="Draft / In Composition"/>
+            <moqui.basic.StatusItem statusId="PlsStaged" statusTypeId="AgiPayloadStatus" statusCode="STAGED" description="Staged in WorkspaceBuffer"/>
+            <moqui.basic.StatusItem statusId="PlsExecuting" statusTypeId="AgiPayloadStatus" statusCode="EXECUTING" description="Execution In Progress"/>
+            <moqui.basic.StatusItem statusId="PlsCommitted" statusTypeId="AgiPayloadStatus" statusCode="COMMITTED" description="Successfully Committed to Disk/DB"/>
+            <moqui.basic.StatusItem statusId="PlsFailed" statusTypeId="AgiPayloadStatus" statusCode="FAILED" description="Execution / Assertion Failed"/>
+            <moqui.basic.StatusItem statusId="PlsArchived" statusTypeId="AgiPayloadStatus" statusCode="ARCHIVED" description="Archived / Inactive"/>
+        
+        </seed-data>
+    </entity>
+
+    <entity entity-name="AgiPayloadFacet" package="org.moqui.ai.payload">
+        <description>Key-value facet tags refining an AI intent or user prompt.</description>
+        <field name="payloadFacetId" type="id" is-pk="true"/>
+        <field name="agiPayloadId" type="id" not-null="true"/>
+        <field name="facetKey" type="id-long" not-null="true"/>
+        <field name="facetValue" type="text-medium" not-null="true"/>
+
+        <relationship type="one" related="org.moqui.ai.payload.AgiPayload">
+            <key-map field-name="agiPayloadId"/>
+        </relationship>
+        <index name="AGI_PLDFCT_KV"><index-field name="facetKey"/><index-field name="facetValue"/></index>
+    </entity>
+
+</entities>
