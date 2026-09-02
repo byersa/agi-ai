@@ -41,6 +41,9 @@
             <method type="get"><service name="org.moqui.ai.mcp.McpPayloadServices.get#Payload"/></method>
         </resource>
     </resource>
+    <resource name="payloads">
+        <method type="get"><service name="org.moqui.ai.mcp.McpPayloadServices.find#HistoricalPayloads"/></method>
+    </resource>
     <!-- Dual-Layer MCP File/DB Synchronization -->
     <resource name="sync">
         <resource name="component">

@@ -5,10 +5,11 @@
     <!-- ===================================================================== -->
     <!-- SYNC COMPONENT MCP DIRECTORY (File -> DB Hydration)                   -->
     <!-- ===================================================================== -->
-    <service verb="sync" noun="ComponentMcpDirectory" type="inline">
+    <service verb="sync" noun="ComponentMcpDirectory" type="inline" authenticate="anonymous-all">
         <description>
             Scans runtime/component/{targetComponent}/mcp/ and synchronizes YAML intent DAGs, 
             Markdown discussion notes, and test manifests into WorkEffort, WikiPage, and AgiPayload entities.
+            Automatically provisions mcp/, intents/, manifests/, and resources/ directories if they do not exist.
         </description>
         <in-parameters>
             <parameter name="targetComponent" default-value="nursinghome" required="true"/>
@@ -29,20 +30,24 @@
                 int wikiCount = 0
                 int manifestsCount = 0
 
+                // 1. Resolve and ensure component mcp/ directory structure exists
                 String compDir = "runtime/component/${targetComponent}/mcp"
                 File mcpRoot = new File(compDir)
-                if (!mcpRoot.exists() || !mcpRoot.isDirectory()) {
-                    ec.logger.info("ℹ️ [McpSyncServices] No mcp/ directory found for component: ${targetComponent}")
-                    context.syncedIntentsCount = 0
-                    context.syncedWikiPagesCount = 0
-                    context.syncedManifestsCount = 0
-                    return
+                File intentsDir = new File(mcpRoot, "intents")
+                File manifestsDir = new File(mcpRoot, "manifests")
+                File resourcesDir = new File(mcpRoot, "resources")
+
+                if (!mcpRoot.exists()) {
+                    boolean created = mcpRoot.mkdirs()
+                    if (created) ec.logger.info("📁 [McpSyncServices] Auto-created MCP root directory: ${compDir}")
                 }
+                if (!intentsDir.exists()) intentsDir.mkdirs()
+                if (!manifestsDir.exists()) manifestsDir.mkdirs()
+                if (!resourcesDir.exists()) resourcesDir.mkdirs()
 
                 Yaml yamlParser = new Yaml()
 
-                // 1. Synchronize Structured Intent DAGs (*.intent.yaml -> WorkEffort + AgiArtifact)
-                File intentsDir = new File(mcpRoot, "intents")
+                // 2. Synchronize Structured Intent DAGs (*.intent.yaml -> WorkEffort + AgiArtifact)
                 if (intentsDir.exists() && intentsDir.isDirectory()) {
                     intentsDir.eachFileMatch(~/.*\.intent\.ya?ml/) { File f ->
                         try {
@@ -53,7 +58,6 @@
                             String mariaId = intentMap.mariaId
                             List intentsList = intentMap.intents ?: []
 
-                            // Ensure AgiArtifact exists
                             def artVal = null
                             if (artUri) {
                                 artVal = ec.entity.find("org.moqui.ai.AgiArtifact").condition("artifactPath", artUri).one()
@@ -66,7 +70,6 @@
                                 }
                             }
 
-                            // Walk Intent Graph Nodes
                             intentsList.each { Map node ->
                                 String nodeName = node.name ?: "Intent Step"
                                 String weType = node.type ?: "WetIntent"
@@ -103,7 +106,7 @@
                     }
                 }
 
-                // 2. Synchronize Narrative Markdown Discussions (*.notes.md / *.md -> WikiPage)
+                // 3. Synchronize Narrative Markdown Discussions (*.notes.md -> WikiPage)
                 if (intentsDir.exists() && intentsDir.isDirectory()) {
                     intentsDir.eachFileMatch(~/.*\.notes\.md/) { File f ->
                         try {
@@ -111,7 +114,6 @@
                             String wikiSpaceId = "${targetComponent.toUpperCase()}_INTENTS"
                             String markdownContent = f.text
 
-                            // Ensure WikiSpace exists
                             def spaceVal = ec.entity.find("moqui.resource.wiki.WikiSpace").condition("wikiSpaceId", wikiSpaceId).one()
                             if (!spaceVal) {
                                 spaceVal = ec.entity.makeValue("moqui.resource.wiki.WikiSpace")
@@ -157,8 +159,7 @@
                     }
                 }
 
-                // 3. Synchronize Test Manifests (manifests/*.yaml -> AgiPayload)
-                File manifestsDir = new File(mcpRoot, "manifests")
+                // 4. Synchronize Test Manifests (manifests/*.yaml -> AgiPayload)
                 if (manifestsDir.exists() && manifestsDir.isDirectory()) {
                     manifestsDir.eachFileMatch(~/.*\.ya?ml/) { File f ->
                         try {
@@ -201,7 +202,7 @@
     <!-- ===================================================================== -->
     <!-- EXPORT ARTIFACT MCP YAML (DB -> File Serialization)                  -->
     <!-- ===================================================================== -->
-    <service verb="export" noun="ArtifactMcpYaml" type="inline">
+    <service verb="export" noun="ArtifactMcpYaml" type="inline" authenticate="anonymous-all">
         <description>
             Exports database WorkEffort DAG nodes, discussion WikiPages, and facets
             for a specific AgiArtifact into standard YAML and Markdown files in component/mcp/.

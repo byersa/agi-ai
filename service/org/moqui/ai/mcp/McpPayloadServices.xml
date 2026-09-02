@@ -201,4 +201,56 @@
         </actions>
     </service>
 
+    <service verb="find" noun="HistoricalPayloads" type="inline" authenticate="anonymous-all">
+        <in-parameters>
+            <parameter name="searchTerm"/>
+            <parameter name="modeEnumId"/>
+            <parameter name="statusId"/>
+            <parameter name="targetComponent"/>
+            <parameter name="artifactUri"/>
+            <parameter name="limit" type="Integer" default="20"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="payloadList" type="List"/>
+        </out-parameters>
+        <actions>
+            <entity-find entity-name="org.moqui.ai.payload.AgiPayload" list="rawList" limit="limit">
+                <econditions combine="and">
+                    <econdition field-name="targetComponent" from="targetComponent" ignore-if-empty="true"/>
+                    <econdition field-name="modeEnumId" from="modeEnumId" ignore-if-empty="true"/>
+                    <econdition field-name="statusId" from="statusId" ignore-if-empty="true"/>
+                    <econditions combine="or">
+                        <econdition field-name="userPromptText" operator="like" value="%${searchTerm}%" ignore-if-empty="true" ignore-case="true"/>
+                        <econdition field-name="title" operator="like" value="%${searchTerm}%" ignore-if-empty="true" ignore-case="true"/>
+                    </econditions>
+                </econditions>
+                <order-by field-name="-lastUpdatedStamp"/>
+            </entity-find>
+    
+            <script><![CDATA[
+                List results = []
+                rawList.each { pld ->
+                    def facetList = ec.entity.find("org.moqui.ai.payload.AgiPayloadFacet")
+                        .condition("agiPayloadId", pld.agiPayloadId)
+                        .list()
+                    Map facetMap = [:]
+                    facetList.each { f -> facetMap[f.facetKey] = f.facetValue }
+    
+                    results.add([
+                        agiPayloadId: pld.agiPayloadId,
+                        title: pld.title ?: (pld.userPromptText?.take(45) + "..."),
+                        userPromptText: pld.userPromptText,
+                        modeEnumId: pld.modeEnumId,
+                        statusId: pld.statusId,
+                        artifactUri: pld.artifactUri,
+                        targetMariaId: pld.targetMariaId,
+                        lastUpdatedStamp: pld.lastUpdatedStamp?.toString(),
+                        facets: facetMap
+                    ])
+                }
+                context.payloadList = results
+            ]]></script>
+        </actions>
+    </service>
+
 </services>

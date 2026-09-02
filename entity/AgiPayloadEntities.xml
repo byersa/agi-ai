@@ -30,9 +30,9 @@
         
         <!-- Telemetry & Revision Locks -->
         <field name="revisionNumber" type="number-integer" default="1"/>
-        <field name="contentSha256" type="text-short"/>
+        <field name="contentSha256" type="text-medium"/>
         <field name="createdDate" type="date-time"/>
-        <field name="lastUpdatedStamp" type="date-time"/>
+        <!-- Note: lastUpdatedStamp is automatically injected and managed by Moqui; do not declare it explicitly -->
 
         <!-- Relationships -->
         <relationship type="one" title="Mode" related="moqui.basic.Enumeration">
@@ -54,9 +54,9 @@
             <key-map field-name="parentPayloadId" related="agiPayloadId"/>
         </relationship>
 
-        <index name="AGI_PLD_URI"><index-field name="artifactUri"/></index>
         <index name="AGI_PLD_WE"><index-field name="workEffortId"/></index>
         <index name="AGI_PLD_MODE"><index-field name="modeEnumId"/></index>
+        <index name="AGI_PLD_ART"><index-field name="agiArtifactId"/></index>
 
         <seed-data>
         
