@@ -1,0 +1,116 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://moqui.org/schemas/agi/EntityPayload.schema.json",
+    "title": "EntityPayloadEnvelope",
+    "description": "Composite schema validating an AgiPayload envelope containing an Entity definition",
+    "allOf": [
+        {
+            "$ref": "../AgiPayloadEnvelope.schema.json"
+        },
+        {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "required": [
+                        "entityName",
+                        "package",
+                        "fields",
+                        "pkFields"
+                    ],
+                    "properties": {
+                        "entityName": {
+                            "type": "string",
+                            "description": "Name of the entity without package (e.g. ResidentAssessment)"
+                        },
+                        "package": {
+                            "type": "string",
+                            "description": "Package grouping namespace (e.g. nursinghome.clinical)"
+                        },
+                        "enableAuditLog": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Enforce audit trail logging on row creation, updates, and deletes"
+                        },
+                        "pkFields": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "minItems": 1,
+                            "description": "List of field names that constitute the primary key"
+                        },
+                        "fields": {
+                            "type": "object",
+                            "description": "Field definitions keyed by field name",
+                            "additionalProperties": {
+                                "type": "object",
+                                "required": [
+                                    "type"
+                                ],
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "description": "Moqui field type (id, text-medium, date-time, number-decimal, etc.)"
+                                    },
+                                    "isPk": {
+                                        "type": "boolean",
+                                        "default": false
+                                    },
+                                    "encrypt": {
+                                        "type": "boolean",
+                                        "default": false,
+                                        "description": "HIPAA requirement: encrypt sensitive PHI at rest"
+                                    },
+                                    "description": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        },
+                        "relationships": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "relatedEntity",
+                                    "type"
+                                ],
+                                "properties": {
+                                    "relatedEntity": {
+                                        "type": "string"
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "one",
+                                            "many",
+                                            "one-nofk"
+                                        ]
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    },
+                                    "keyMaps": {
+                                        "type": "object",
+                                        "additionalProperties": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "rawXmlContent": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "Declarative entity definition XML conforming to entity-definition-3.0.xsd"
+                        }
+                    },
+                    "additionalProperties": true
+                }
+            }
+        }
+    ]
+}

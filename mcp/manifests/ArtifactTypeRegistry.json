@@ -1,0 +1,85 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "ArtifactTypeRegistry",
+    "description": "Maps artifact file patterns to their schemas, markdown system instructions, and UI editors",
+    "artifactTypes": {
+        "XML_SCREEN": {
+            "typeName": "Moqui XML Screen",
+            "typeEnumId": "AatXmlScreen",
+            "fileMatchPatterns": [
+                "screen/.*\\.xml$",
+                ".*Screen\\.xml$"
+            ],
+            "schemaUri": "component://agi-ai/mcp/schemas/payload/artifacts/ScreenPayload.schema.json",
+            "instructionUri": "component://agi-ai/mcp/instructions/artifacts/ScreenInstruction.md",
+            "editorComponent": "agi-screen-payload-editor",
+            "groundingPanels": [
+                "targetCoordinate",
+                "canonicalArchetypes",
+                "detectedEntities",
+                "intentThreads",
+                "governanceRules"
+            ]
+        },
+        "SERVICE": {
+            "typeName": "Moqui Service Definition",
+            "typeEnumId": "AatService",
+            "fileMatchPatterns": [
+                "service/.*Services\\.xml$",
+                "service/.*\\.xml$",
+                "script/.*\\.groovy$"
+            ],
+            "schemaUri": "component://agi-ai/mcp/schemas/payload/artifacts/ServicePayload.schema.json",
+            "instructionUri": "component://agi-ai/mcp/instructions/artifacts/ServiceInstruction.md",
+            "editorComponent": "agi-service-payload-editor",
+            "groundingPanels": [
+                "serviceParameters",
+                "transactionSettings",
+                "detectedEntities",
+                "governanceRules"
+            ]
+        },
+        "ENTITY": {
+            "typeName": "Moqui Entity Definition",
+            "typeEnumId": "AatEntity",
+            "fileMatchPatterns": [
+                "entity/.*Entities\\.xml$",
+                "entity/.*\\.xml$"
+            ],
+            "schemaUri": "component://agi-ai/mcp/schemas/payload/artifacts/EntityPayload.schema.json",
+            "instructionUri": "component://agi-ai/mcp/instructions/artifacts/EntityInstruction.md",
+            "editorComponent": "agi-entity-payload-editor",
+            "groundingPanels": [
+                "udmReuseExplorer",
+                "fieldDefinitions",
+                "governanceRules"
+            ]
+        },
+        "TEST": {
+            "typeName": "Moqui Test Suite",
+            "typeEnumId": "AatTest",
+            "fileMatchPatterns": [
+                "test/.*Test\\.xml$",
+                "test/.*TestSuite\\.xml$"
+            ],
+            "schemaUri": "component://agi-ai/mcp/schemas/payload/artifacts/TestPayload.schema.json",
+            "instructionUri": "component://agi-ai/mcp/instructions/artifacts/TestInstruction.md",
+            "editorComponent": "agi-test-payload-editor",
+            "groundingPanels": [
+                "testPipelineManifest",
+                "targetServiceBinding",
+                "governanceRules"
+            ]
+        }
+    },
+    "facetInstructionMap": {
+        "hipaa": {
+            "conditionValue": "true",
+            "instructionUri": "component://agi-ai/mcp/instructions/facets/HipaaCompliance.md"
+        },
+        "domain": {
+            "conditionValue": "clinical",
+            "instructionUri": "component://agi-ai/mcp/instructions/facets/UdmReuse.md"
+        }
+    }
+}

@@ -1,0 +1,95 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://moqui.org/schemas/agi/TestPayload.schema.json",
+    "title": "TestPayloadEnvelope",
+    "description": "Composite schema validating an AgiPayload envelope containing an automated Test Suite or Assertion Manifest",
+    "allOf": [
+        {
+            "$ref": "../AgiPayloadEnvelope.schema.json"
+        },
+        {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "required": [
+                        "testManifest",
+                        "executionTarget"
+                    ],
+                    "properties": {
+                        "executionTarget": {
+                            "type": "string",
+                            "description": "Target component or specific artifact URI under test"
+                        },
+                        "testManifest": {
+                            "type": "array",
+                            "description": "Ordered pipeline of declarative test assertions and operational steps",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "stepId",
+                                    "action",
+                                    "assertions"
+                                ],
+                                "properties": {
+                                    "stepId": {
+                                        "type": "string",
+                                        "description": "Unique identifier for this test sequence step"
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    },
+                                    "action": {
+                                        "type": "string",
+                                        "enum": [
+                                            "SERVICE_CALL",
+                                            "ASSERT_STATE",
+                                            "HTTP_REQUEST",
+                                            "ENTITY_QUERY"
+                                        ],
+                                        "description": "Action type executed during this phase"
+                                    },
+                                    "serviceName": {
+                                        "type": "string",
+                                        "description": "Target service if action is SERVICE_CALL"
+                                    },
+                                    "parameters": {
+                                        "type": "object",
+                                        "description": "Input parameters provided to the action"
+                                    },
+                                    "assertions": {
+                                        "type": "object",
+                                        "description": "Assertions validated against output state",
+                                        "properties": {
+                                            "expectFileExists": {
+                                                "type": "boolean"
+                                            },
+                                            "expectBufferExists": {
+                                                "type": "boolean"
+                                            },
+                                            "expectStatus": {
+                                                "type": "string"
+                                            },
+                                            "expectedValues": {
+                                                "type": "object"
+                                            }
+                                        },
+                                        "additionalProperties": true
+                                    }
+                                }
+                            }
+                        },
+                        "rawXmlContent": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "Executable Moqui XML test case markup conforming to xml-actions-3.0.xsd"
+                        }
+                    },
+                    "additionalProperties": true
+                }
+            }
+        }
+    ]
+}

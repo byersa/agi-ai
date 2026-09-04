@@ -53,4 +53,9 @@
             <method type="post"><service name="org.moqui.ai.mcp.McpSyncServices.export#ArtifactMcpYaml"/></method>
         </resource>
     </resource>
+    <resource name="artifactMetadata">
+        <method type="get">
+            <service name="org.moqui.ai.mcp.McpPayloadServices.get#ArtifactMetadata"/>
+        </method>
+    </resource>
 </resource>

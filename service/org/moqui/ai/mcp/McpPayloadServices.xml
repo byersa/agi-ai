@@ -33,6 +33,7 @@
                 import groovy.json.JsonOutput
                 import java.security.MessageDigest
 
+                ec.logger.info("[PROCESS#PAYLOAD] context: ${context}")
                 // 1. Map mode string to enumId
                 Map modeMap = [
                     'plan': 'AamPlan', 'build': 'AamBuild', 'orchestrate': 'AamOrchestrate',
@@ -249,6 +250,266 @@
                     ])
                 }
                 context.payloadList = results
+            ]]></script>
+        </actions>
+    </service>
+
+    <service verb="run" noun="OpenAiProxy" type="script"
+             location="component://agi-ai/script/executeOpenAiProxyLoop.groovy">
+        <description>
+            Executes multi-turn agent tool execution loop against OpenAI-compatible REST endpoints.
+        </description>
+        <in-parameters>
+            <parameter name="mode" default-value="build"/>
+            <parameter name="userPrompt" required="true" allow-html="any" />
+            <parameter name="targetComponent" default-value="nursinghome"/>
+            <parameter name="focusCoordinate"/>
+            <parameter name="activeArtifactLocation"/>
+            <parameter name="targetMariaId"/>
+            <parameter name="activeRagContext" allow-html="any" />
+            <parameter name="facets" type="Map"/>
+            <parameter name="availableToolSchemas" type="List"/>
+            <!-- Optional overrides for dynamic provider selection -->
+            <parameter name="aiEndpointUrl"/>
+            <parameter name="aiApiKey"/>
+            <parameter name="aiModelName"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="completionText" type="String"/>
+            <parameter name="status" type="String"/>
+            <parameter name="createdArtifactUri" type="String"/>
+            <parameter name="rawXmlContent" type="String"/>
+        </out-parameters>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- ASSEMBLE SYSTEM INSTRUCTION (Dynamic Layered Instructions)            -->
+    <!-- ===================================================================== -->
+    <service verb="assemble" noun="SystemInstruction" type="inline" authenticate="anonymous-all">
+        <description>
+            Dynamically composes a layered system instruction Markdown prompt 
+            (Base -> Artifact-Specific -> Mode Directive -> Facet Overlays) using ArtifactTypeRegistry.json.
+        </description>
+        <in-parameters>
+            <parameter name="artifactUri" required="true"/>
+            <parameter name="mode" default-value="build"/>
+            <parameter name="facets" type="Map"/>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="systemInstruction" type="String" required="true"/>
+            <parameter name="detectedArtifactType" type="String"/>
+            <parameter name="schemaUri" type="String"/>
+            <parameter name="editorComponent" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import groovy.json.JsonSlurper
+                import org.moqui.resource.ResourceReference
+
+                StringBuilder instructionBuffer = new StringBuilder()
+
+                // Helper: safely fetch resource text
+                def loadResourceText = { String loc ->
+                    if (!loc) return null
+                    try {
+                        ResourceReference rr = ec.resource.getLocationReference(loc)
+                        if (rr != null && rr.getExists()) {
+                            return rr.getText()
+                        }
+                    } catch (Exception e) {
+                        ec.logger.warn("⚠️ [assemble#SystemInstruction] Failed to read resource at ${loc}: ${e.message}")
+                    }
+                    return null
+                }
+
+                // 1. Load Registry Configuration
+                String registryLocation = "component://agi-ai/mcp/manifests/ArtifactTypeRegistry.json"
+                String registryJson = loadResourceText(registryLocation)
+                Map registry = [:]
+                if (registryJson) {
+                    try {
+                        registry = new JsonSlurper().parseText(registryJson) as Map
+                    } catch (Exception e) {
+                        ec.logger.error("❌ Failed to parse ArtifactTypeRegistry.json: ${e.message}", e)
+                    }
+                }
+
+                // 2. Layer 1: System Base Instruction
+                String baseLoc = "component://agi-ai/mcp/instructions/base/SystemBaseInstruction.md"
+                String baseText = loadResourceText(baseLoc)
+                if (baseText) {
+                    instructionBuffer.append(baseText.trim())
+                    instructionBuffer.append("\n\n")
+                } else {
+                    ec.logger.warn("⚠️ [assemble#SystemInstruction] SystemBaseInstruction.md not found at ${baseLoc}")
+                }
+
+                // 3. Layer 2: Determine Artifact Type & Append Specific Instruction
+                String matchedTypeKey = "XML_SCREEN" // sensible default
+                Map matchedConfig = null
+                Map artifactTypes = (registry.artifactTypes ?: [:]) as Map
+
+                for (entry in artifactTypes) {
+                    Map typeDef = entry.value as Map
+                    List patterns = (typeDef.fileMatchPatterns ?: []) as List
+
+                    boolean matches = patterns.any { pattern ->
+                        try {
+                            return java.util.regex.Pattern.compile(pattern.toString()).matcher(artifactUri).find()
+                        } catch (Exception pe) {
+                            return false
+                        }
+                    }
+
+                    if (matches) {
+                        matchedTypeKey = typeKey
+                        matchedConfig = typeDef
+                        break
+                    }
+                }
+
+                if (!matchedConfig && artifactTypes.containsKey("XML_SCREEN")) {
+                    matchedConfig = artifactTypes.get("XML_SCREEN") as Map
+                }
+
+                if (matchedConfig) {
+                    String artifactInstructionLoc = matchedConfig.instructionUri
+                    String artifactText = loadResourceText(artifactInstructionLoc)
+                    if (artifactText) {
+                        instructionBuffer.append("<!-- ============================================================= -->\n")
+                        instructionBuffer.append("<!-- ARTIFACT DIRECTIVES: ${matchedTypeKey} -->\n")
+                        instructionBuffer.append("<!-- ============================================================= -->\n")
+                        instructionBuffer.append(artifactText.trim())
+                        instructionBuffer.append("\n\n")
+                    }
+                    context.schemaUri = matchedConfig.schemaUri
+                    context.editorComponent = matchedConfig.editorComponent
+                }
+                context.detectedArtifactType = matchedTypeKey
+
+                // 4. Layer 2.5: Mode-Specific Operational Directives (Step C)
+                String normalizedMode = (mode ?: 'build').toLowerCase().trim()
+                instructionBuffer.append("<!-- ============================================================= -->\n")
+                instructionBuffer.append("<!-- CURRENT OPERATION MODE: ${normalizedMode.toUpperCase()} -->\n")
+                instructionBuffer.append("<!-- ============================================================= -->\n")
+
+                if (normalizedMode == 'plan') {
+                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: PLAN MODE
+- You are strictly operating as an Architectural Formulator and Planner.
+- DO NOT generate complete runnable XML files, and DO NOT invoke file mutation tools.
+- Output ONLY an architectural design specification in your message response.
+- In your JSON response envelope, set "rawXmlContent": null, "astTree": null.
+- Provide a clear, structured Markdown breakdown including:
+  1. High-level architecture and Mantle UDM entity mappings (e.g. mantle.party.Party, Person, etc.).
+  2. UI layout structure, forms, tables, and container hierarchy.
+  3. Security and HIPAA compliance rules enforced.
+  4. Numbered, step-by-step implementation tasks ready for execution in BUILD mode.
+""")
+                } else if (normalizedMode == 'discuss') {
+                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: DISCUSS MODE
+- You are acting as an architectural peer discussing Intent, Trade-offs, and Architectural Decision Records (ADRs).
+- DO NOT generate raw XML screen markup or mutate files.
+- In your JSON response envelope, set "rawXmlContent": null, "astTree": null.
+- Clarify domain rules, entity modeling choices, and state transitions collaboratively.
+""")
+                } else if (normalizedMode == 'test') {
+                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: TEST MODE
+- You are generating declarative test verification suites and assertions.
+- Adhere strictly to the TestPayload schema and Moqui test assertion syntax.
+""")
+                } else {
+                    // Default / Build Mode
+                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: BUILD MODE
+- You are actively mutating or generating software artifacts.
+- Produce production-grade, syntactically clean declarative Moqui XML matching the specified schemas.
+- Provide the complete artifact markup in "rawXmlContent" or call the appropriate mutation tool.
+""")
+                }
+                instructionBuffer.append("\n\n")
+
+                // 5. Layer 3: Dynamic Facet Overlays
+                Map facetMap = (facets ?: [:]) as Map
+                Map facetInstructionMap = (registry.facetInstructionMap ?: [:]) as Map
+
+                facetInstructionMap.each { facetKey, mappingObj ->
+                    String expectedVal = mappingObj.conditionValue?.toString()
+                    String instructionLoc = mappingObj.instructionUri?.toString()
+                    String actualVal = facetMap.get(facetKey)?.toString()
+
+                    if (expectedVal != null && actualVal != null && expectedVal.equalsIgnoreCase(actualVal)) {
+                        String facetText = loadResourceText(instructionLoc)
+                        if (facetText) {
+                            instructionBuffer.append("<!-- ============================================================= -->\n")
+                            instructionBuffer.append("<!-- COMPLIANCE FACET OVERLAY: ${facetKey}=${actualVal} -->\n")
+                            instructionBuffer.append("<!-- ============================================================= -->\n")
+                            instructionBuffer.append(facetText.trim())
+                            instructionBuffer.append("\n\n")
+                        }
+                    }
+                }
+
+                context.systemInstruction = instructionBuffer.toString().trim()
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- GET ARTIFACT METADATA (Client-Facing Registry Introspection)          -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="ArtifactMetadata" type="inline" authenticate="anonymous-all">
+        <in-parameters>
+            <parameter name="artifactUri" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="artifactType" type="String"/>
+            <parameter name="typeName" type="String"/>
+            <parameter name="schemaUri" type="String"/>
+            <parameter name="editorComponent" type="String"/>
+            <parameter name="groundingPanels" type="List"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import groovy.json.JsonSlurper
+                import org.moqui.resource.ResourceReference
+
+                String regLoc = "component://agi-ai/mcp/manifests/ArtifactTypeRegistry.json"
+                ResourceReference rr = ec.resource.getLocationReference(regLoc)
+                Map registry = [:]
+                if (rr != null && rr.getExists()) {
+                    try {
+                        registry = new JsonSlurper().parseText(rr.getText()) as Map
+                    } catch (Exception e) {
+                        ec.logger.error("❌ Failed to parse ArtifactTypeRegistry: ${e.message}")
+                    }
+                }
+
+                Map artifactTypes = (registry.artifactTypes ?: [:]) as Map
+                String matchedKey = "XML_SCREEN"
+                Map matchedConfig = artifactTypes.get("XML_SCREEN") as Map
+
+                for (entry in artifactTypes) {
+                    Map typeDef = entry.value as Map
+                    List patterns = (typeDef.fileMatchPatterns ?: []) as List
+                    boolean matches = patterns.any { p ->
+                        try {
+                            return java.util.regex.Pattern.compile(p.toString()).matcher(artifactUri).find()
+                        } catch (Exception pe) {
+                            return false
+                        }
+                    }
+                    if (matches) {
+                        matchedKey = entry.key
+                        matchedConfig = typeDef
+                        break
+                    }
+                }
+
+                context.artifactType = matchedKey
+                context.typeName = matchedConfig?.typeName ?: matchedKey
+                context.schemaUri = matchedConfig?.schemaUri
+                context.editorComponent = matchedConfig?.editorComponent ?: "agi-screen-payload-editor"
+                context.groundingPanels = matchedConfig?.groundingPanels ?: []
             ]]></script>
         </actions>
     </service>

@@ -1,0 +1,121 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://moqui.org/schemas/agi/ServicePayload.schema.json",
+    "title": "ServicePayloadEnvelope",
+    "description": "Composite schema validating an AgiPayload envelope containing a Moqui Service definition",
+    "allOf": [
+        {
+            "$ref": "../AgiPayloadEnvelope.schema.json"
+        },
+        {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "required": [
+                        "verb",
+                        "noun",
+                        "serviceType"
+                    ],
+                    "properties": {
+                        "verb": {
+                            "type": "string",
+                            "description": "Service action verb (e.g. create, update, delete, find, process)"
+                        },
+                        "noun": {
+                            "type": "string",
+                            "description": "Service target noun or entity name (e.g. PatientRecord, CarePlan)"
+                        },
+                        "serviceType": {
+                            "type": "string",
+                            "enum": [
+                                "inline",
+                                "script",
+                                "java"
+                            ],
+                            "description": "Moqui service execution engine type"
+                        },
+                        "transactionMode": {
+                            "type": "string",
+                            "enum": [
+                                "use-or-begin",
+                                "force-new",
+                                "force-cache",
+                                "ignore",
+                                "cache"
+                            ],
+                            "default": "use-or-begin"
+                        },
+                        "inParameters": {
+                            "type": "object",
+                            "description": "Map of input parameter definitions keyed by parameter name",
+                            "additionalProperties": {
+                                "type": "object",
+                                "required": [
+                                    "type"
+                                ],
+                                "properties": {
+                                    "type": {
+                                        "type": "string"
+                                    },
+                                    "required": {
+                                        "type": "boolean",
+                                        "default": false
+                                    },
+                                    "defaultValue": {
+                                        "type": [
+                                            "string",
+                                            "number",
+                                            "boolean",
+                                            "null"
+                                        ]
+                                    },
+                                    "description": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        },
+                        "outParameters": {
+                            "type": "object",
+                            "description": "Map of output parameter definitions keyed by parameter name",
+                            "additionalProperties": {
+                                "type": "object",
+                                "required": [
+                                    "type"
+                                ],
+                                "properties": {
+                                    "type": {
+                                        "type": "string"
+                                    },
+                                    "required": {
+                                        "type": "boolean",
+                                        "default": false
+                                    },
+                                    "description": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        },
+                        "rawXmlContent": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "Declarative service definition markup conforming to service-3.0.xsd"
+                        },
+                        "scriptContent": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "Groovy or Java source code if serviceType is script or java"
+                        }
+                    },
+                    "additionalProperties": true
+                }
+            }
+        }
+    ]
+}

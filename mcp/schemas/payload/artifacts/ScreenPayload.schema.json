@@ -1,0 +1,58 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://moqui.org/schemas/agi/ScreenPayload.schema.json",
+    "title": "ScreenPayloadEnvelope",
+    "description": "Composite schema validating an AgiPayload envelope containing an XML Screen payload",
+    "allOf": [
+        {
+            "$ref": "../AgiPayloadEnvelope.schema.json"
+        },
+        {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "description": "Screen artifact specific payload details",
+                    "properties": {
+                        "targetMariaId": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "Target coordinate identifier within the screen widget tree"
+                        },
+                        "focusCoordinateArray": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Breadcrumb path segments locating the focused widget element"
+                        },
+                        "archetypeUri": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "URI of the canonical template blueprint if applied"
+                        },
+                        "astTree": {
+                            "type": [
+                                "object",
+                                "null"
+                            ],
+                            "description": "Abstract Syntax Tree representation of the screen or targeted widget"
+                        },
+                        "rawXmlContent": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "description": "Complete declarative W3C XML markup conforming to xml-screen-3.xsd"
+                        }
+                    },
+                    "additionalProperties": true
+                }
+            }
+        }
+    ]
+}

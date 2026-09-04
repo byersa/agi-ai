@@ -3,15 +3,15 @@
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
     <!-- ===================================================================== -->
-    <!-- MCP SERVICE: GET TOOL LIST (Schema Reflection)                        -->
+    <!-- MCP SERVICE: GET TOOL LIST (Schema Reflection with Side-Effect Meta)  -->
     <!-- Scans <comp>/service/**/mcp/** for Moqui Service XMLs                 -->
     <!-- ===================================================================== -->
-    <service verb="get" noun="ToolList" type="inline">
+    <service verb="get" noun="ToolList" type="inline" read-only="true" >
         <description>
             Implements standard MCP tools/list by scanning all active components 
             for service definitions located in standard Moqui service directories 
             under service/**/mcp/** and transforming in-parameters into JSON Schema 
-            parameter definitions.
+            parameter definitions with declarative readOnly side-effect metadata.
         </description>
         <in-parameters>
             <parameter name="domain">
@@ -23,7 +23,7 @@
         </in-parameters>
         <out-parameters>
             <parameter name="tools" type="List">
-                <description>List of MCP Tool definitions with JSON Schema input definitions</description>
+                <description>List of MCP Tool definitions with JSON Schema input definitions and side-effect metadata</description>
             </parameter>
         </out-parameters>
         <actions>
@@ -60,6 +60,11 @@
                     }
                 }
 
+                // Standard Moqui read verbs (used when read-only attribute is omitted)
+                Set<String> defaultReadVerbs = [
+                    "get", "find", "search", "list", "inspect", "read", "introspect"
+                ] as Set
+
                 if (compBase.exists() && compBase.isDirectory()) {
                     compBase.eachDir { File compDir ->
                         String cName = compDir.name
@@ -89,20 +94,33 @@
                                     if (rootNode.name() == 'services') {
                                         rootNode.children().each { serviceNode ->
                                             if (serviceNode instanceof Node && serviceNode.name() == 'service') {
-                                                String verb = serviceNode.attribute('verb') ?: ''
-                                                String noun = serviceNode.attribute('noun') ?: ''
+                                                String verb = (serviceNode.attribute('verb') ?: '').trim()
+                                                String noun = (serviceNode.attribute('noun') ?: '').trim()
                                                 String localServiceName = "${verb}#${noun}"
                                                 
-                                                // Full Moqui callable name (e.g. org.moqui.ai.mcp.MCPScreenServices.create#Screen)
+                                                // Full Moqui callable name (e.g. org.moqui.ide.mcp.McpScreenServices.get#RawXml)
                                                 String fullServiceName = serviceNode.attribute('name') ?: "${packagePath}.${localServiceName}"
 
                                                 // Derive domain from filename or noun (e.g. MCPScreenServices -> screen)
-                                                String derivedDomain = filenameOnly.toLowerCase().replace("mcp", "").replace("services", "").replace("tools", "")
+                                                String derivedDomain = filenameOnly.toLowerCase()
+                                                    .replace("mcp", "")
+                                                    .replace("services", "")
+                                                    .replace("tools", "")
                                                 if (!derivedDomain) derivedDomain = "general"
 
                                                 if (domain && derivedDomain != domain.toLowerCase()) return
 
+                                                // Deterministic MCP Tool Identifier
                                                 String toolIdentifier = "${cName}__${derivedDomain}__${verb}_${noun}"
+
+                                                // Side-Effect Resolution: Check explicit attribute first, fallback to standard read verb
+                                                String explicitReadOnly = serviceNode.attribute('read-only') ?: serviceNode.attribute('readonly')
+                                                boolean isReadOnly = false
+                                                if (explicitReadOnly != null) {
+                                                    isReadOnly = "true".equalsIgnoreCase(explicitReadOnly.trim())
+                                                } else {
+                                                    isReadOnly = defaultReadVerbs.contains(verb.toLowerCase())
+                                                }
 
                                                 String docText = ""
                                                 Node descNode = serviceNode.children().find { it instanceof Node && it.name() == 'description' }
@@ -140,7 +158,10 @@
                                                     description: docText ?: "Moqui service tool ${fullServiceName} in ${cName}",
                                                     component: cName,
                                                     domain: derivedDomain,
+                                                    verb: verb,
+                                                    noun: noun,
                                                     serviceCallName: fullServiceName,
+                                                    readOnly: isReadOnly,
                                                     filePath: "component://${cName}/service/${relPathStr}",
                                                     inputSchema: [
                                                         type: "object",
@@ -160,7 +181,7 @@
                 }
 
                 context.tools = toolList
-                ec.logger.info("🛠️ [get#ToolList] Discovered ${toolList.size()} dynamic MCP tools under component service/ directories")
+                ec.logger.info("🛠️ [get#ToolList] Discovered ${toolList.size()} dynamic MCP tools (Read-only: ${toolList.count { it.readOnly }}, Mutative: ${toolList.count { !it.readOnly }})")
             ]]></script>
         </actions>
     </service>

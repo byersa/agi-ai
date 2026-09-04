@@ -1,0 +1,87 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://moqui.org/schemas/agi/AgiPayloadEnvelope.schema.json",
+    "title": "AgiPayloadEnvelope",
+    "description": "Standard root payload envelope for all AGI studio turns and agent interactions",
+    "type": "object",
+    "required": [
+        "mode",
+        "targetComponent",
+        "artifactUri",
+        "userPromptText",
+        "payload"
+    ],
+    "properties": {
+        "agiPayloadId": {
+            "type": [
+                "string",
+                "null"
+            ],
+            "description": "Primary key of the persisted AgiPayload entity if already stored"
+        },
+        "mode": {
+            "type": "string",
+            "enum": [
+                "plan",
+                "build",
+                "orchestrate",
+                "test",
+                "query",
+                "history",
+                "discuss"
+            ],
+            "description": "Active FSM operation mode"
+        },
+        "targetComponent": {
+            "type": "string",
+            "default": "nursinghome",
+            "description": "Moqui component owning the target artifact"
+        },
+        "artifactUri": {
+            "type": "string",
+            "description": "Fully qualified component URI (e.g. component://nursinghome/screen/nursinghome/PatientDetail.xml)"
+        },
+        "targetMariaId": {
+            "type": [
+                "string",
+                "null"
+            ],
+            "description": "Coordinate targeting a specific AST node or UI sub-element"
+        },
+        "title": {
+            "type": [
+                "string",
+                "null"
+            ],
+            "maxLength": 255,
+            "description": "Human-readable label or summarized objective"
+        },
+        "userPromptText": {
+            "type": "string",
+            "description": "Primary user directive or task specification"
+        },
+        "statusId": {
+            "type": "string",
+            "enum": [
+                "PlsDraft",
+                "PlsStaged",
+                "PlsExecuting",
+                "PlsCommitted",
+                "PlsFailed"
+            ],
+            "default": "PlsDraft"
+        },
+        "facets": {
+            "type": "object",
+            "description": "Key-value metadata dictionary for contextual overlays (e.g. hipaa, domain, entity)",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "payload": {
+            "type": "object",
+            "description": "Polymorphic inner payload validated by artifact-specific schemas"
+        }
+    },
+    "additionalProperties": true
+}
