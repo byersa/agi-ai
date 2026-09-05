@@ -131,71 +131,26 @@ ec.logger.info("🔧 [PROXY LOOP TOOLS] Exposing ${openAiTools.size()} MCP tool 
 // STEP 2: DYNAMICALLY ASSEMBLE LAYERED SYSTEM INSTRUCTION & INITIAL MESSAGES
 // =====================================================================================
 String effectiveArtifactUri = artifactUri ? cleanScreenUri(artifactUri, targetComponent) : "component://${targetComponent}/screen/${targetComponent}.xml"
-Map facetsMap = [:]
-if (context.facets instanceof Map) {
-    facetsMap = context.facets
+Map facetsMap = (context.facets instanceof Map) ? context.facets : [:]
+
+Map assembleResult = [:]
+try {
+    assembleResult = ec.service.sync().name("org.moqui.ai.mcp.McpPayloadServices.assemble#SystemInstruction").parameters([
+        artifactUri    : effectiveArtifactUri,
+        mode           : currentMode,
+        facets         : facetsMap,
+        targetComponent: targetComponent
+    ]).call() ?: [:]
+} catch (Exception ex) {
+    ec.logger.warn("⚠️ McpPayloadServices.assemble#SystemInstruction call failed: ${ex.message}", ex)
 }
 
-Map assembleResult = ec.service.sync().name("org.moqui.ai.mcp.McpPayloadServices.assemble#SystemInstruction").parameters([
-    artifactUri    : effectiveArtifactUri,
-    mode           : currentMode,
-    facets         : facetsMap,
-    targetComponent: targetComponent
-]).call()
-
-String systemInstruction = assembleResult.systemInstruction ?: """You are an expert software engineer and architectural peer specializing in the Moqui Ecosystem.
-Favor XML configuration, screen definitions, and declarative entity models over imperative code.
-Always emit standard W3C XML attributes without leading @ characters (e.g. name="...", not @name="...").
-Place all screen <parameter> tags directly under <screen>, preceding <actions> and <widgets>.
+String systemInstruction = assembleResult?.systemInstruction ?: """You are an expert Moqui architecture and development peer.
+Favor declarative XML configurations (screens, services, entities) over imperative code.
+Return well-structured, valid JSON completions conforming to requested schemas.
 """
 
-if (currentMode == "plan") {
-    systemInstruction += """\n
-### MANDATORY PROTOCOL FOR PLAN MODE:
-1. ARCHETYPE DISCOVERY: You MUST examine available canonical archetypes using discovery tools before formulating a plan.
-2. NO HALLUCINATIONS: 'recommendedArchetype' and 'recommendedArchetypeUri' MUST match an exact archetype name and URI discovered on disk (e.g., master-detail, lookup-modal, etc.). Do not fabricate template names.
-3. OUTPUT FORMAT: Return your final response as a single, valid JSON completion object matching this exact schema:
-{
-  "status": "PLANNED",
-  "cleanArtifactUri": "component://${targetComponent}/screen/${targetComponent}/[CleanSubdirectory]/[ScreenName].xml",
-  "recommendedArchetype": "[exact name from discovery]",
-  "recommendedArchetypeUri": "[exact uri from discovery]",
-  "suggestedEntities": [
-    "mantle.party.Party",
-    "mantle.party.Person"
-  ],
-  "screenContract": {
-    "requiredParameters": ["partyId"],
-    "optionalParameters": [],
-    "requiredPermissions": ["PATIENT_VIEW"],
-    "transitions": [
-      { "name": "updatePatient", "service": "mantle.party.PartyServices.update#Person" }
-    ]
-  },
-  "entityFieldBindings": [
-    {
-      "entity": "mantle.party.Person",
-      "fields": ["partyId", "firstName", "lastName", "birthDate"],
-      "targetWidget": "ResidentSummaryForm"
-    }
-  ],
-  "securityAndHipaaRules": [
-    "SSN and MRN must have encrypt='true' or be masked in displays",
-    "Prescription mutations must run under audit-log enabled entities"
-  ],
-  "architectureSummary": "Detailed architectural rationale, UDM extensions, and HIPAA safeguards...",
-  "formulationSteps": [
-    "1. Declare screen parameters...",
-    "2. Prepare actions for Person...",
-    "3. Structure read-only summary card...",
-    "4. Add form-lists for prescriptions and allergies..."
-  ]
-}
-Ensure 'cleanArtifactUri' contains NO repeated 'screen/screen' segments.
-"""
-}
-
-ec.logger.info("📜 [SYSTEM INSTRUCTION ASSEMBLED] Mode: ${currentMode}, Detected Type: ${assembleResult.detectedArtifactType}, Total length: ${systemInstruction.length()} chars")
+ec.logger.info("📜 [SYSTEM INSTRUCTION ASSEMBLED] Mode: ${currentMode}, Detected Type: ${assembleResult?.detectedArtifactType}, Total length: ${systemInstruction.length()} chars")
 
 StringBuilder userPromptBuilder = new StringBuilder()
 if (activeRagContext && activeRagContext.trim()) {

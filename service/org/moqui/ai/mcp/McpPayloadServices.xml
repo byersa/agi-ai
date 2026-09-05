@@ -288,10 +288,11 @@
     <service verb="assemble" noun="SystemInstruction" type="inline" authenticate="anonymous-all">
         <description>
             Dynamically composes a layered system instruction Markdown prompt 
-            (Base -> Artifact-Specific -> Mode Directive -> Facet Overlays) using ArtifactTypeRegistry.json.
+            (Base -> Artifact+Mode -> Facet Overlays).
         </description>
         <in-parameters>
-            <parameter name="artifactUri" required="true"/>
+            <parameter name="artifactUri" required="false"/>
+            <parameter name="artifactType" default-value="screen"/>
             <parameter name="mode" default-value="build"/>
             <parameter name="facets" type="Map"/>
             <parameter name="targetComponent" default-value="nursinghome"/>
@@ -308,6 +309,8 @@
                 import org.moqui.resource.ResourceReference
 
                 StringBuilder instructionBuffer = new StringBuilder()
+                String normalizedMode = (mode ?: 'build').toLowerCase().trim()
+                String safeUri = artifactUri ?: ""
 
                 // Helper: safely fetch resource text
                 def loadResourceText = { String loc ->
@@ -323,129 +326,59 @@
                     return null
                 }
 
-                // 1. Load Registry Configuration
-                String registryLocation = "component://agi-ai/mcp/manifests/ArtifactTypeRegistry.json"
-                String registryJson = loadResourceText(registryLocation)
-                Map registry = [:]
-                if (registryJson) {
-                    try {
-                        registry = new JsonSlurper().parseText(registryJson) as Map
-                    } catch (Exception e) {
-                        ec.logger.error("❌ Failed to parse ArtifactTypeRegistry.json: ${e.message}", e)
-                    }
+                // 1. Layer 1: Base Foundations & Universal Guardrails
+                String foundationText = loadResourceText("component://agi-ai/mcp/instructions/base/system-foundation.md")
+                if (foundationText) {
+                    instructionBuffer.append(foundationText.trim()).append("\n\n")
+                }
+                String guardrailsText = loadResourceText("component://agi-ai/mcp/instructions/base/guardrails.md")
+                if (guardrailsText) {
+                    instructionBuffer.append(guardrailsText.trim()).append("\n\n")
                 }
 
-                // 2. Layer 1: System Base Instruction
-                String baseLoc = "component://agi-ai/mcp/instructions/base/SystemBaseInstruction.md"
-                String baseText = loadResourceText(baseLoc)
-                if (baseText) {
-                    instructionBuffer.append(baseText.trim())
-                    instructionBuffer.append("\n\n")
-                } else {
-                    ec.logger.warn("⚠️ [assemble#SystemInstruction] SystemBaseInstruction.md not found at ${baseLoc}")
+                // 2. Layer 2: Determine Artifact Category
+                String matchedCategory = "screen" // default
+                if (safeUri.contains("/screen/") || safeUri.endsWith(".xml")) {
+                    matchedCategory = "screen"
+                } else if (safeUri.contains("/service/") || safeUri.contains("Services.xml")) {
+                    matchedCategory = "service"
+                } else if (safeUri.contains("/entity/") || safeUri.contains("Entities.xml")) {
+                    matchedCategory = "entity"
+                } else if (artifactType) {
+                    matchedCategory = artifactType.toLowerCase().replace("xml_", "")
+                }
+                context.detectedArtifactType = matchedCategory
+
+                // 3. Layer 3: Artifact + Mode Instruction
+                String artifactModeLoc = "component://agi-ai/mcp/instructions/artifacts/${matchedCategory}/${normalizedMode}.md"
+                String modeText = loadResourceText(artifactModeLoc)
+                if (!modeText) {
+                    // Fallback to generic mode file if category-specific doesn't exist
+                    modeText = loadResourceText("component://agi-ai/mcp/instructions/artifacts/generic/${normalizedMode}.md")
                 }
 
-                // 3. Layer 2: Determine Artifact Type & Append Specific Instruction
-                String matchedTypeKey = "XML_SCREEN" // sensible default
-                Map matchedConfig = null
-                Map artifactTypes = (registry.artifactTypes ?: [:]) as Map
-
-                for (entry in artifactTypes) {
-                    Map typeDef = entry.value as Map
-                    List patterns = (typeDef.fileMatchPatterns ?: []) as List
-
-                    boolean matches = patterns.any { pattern ->
-                        try {
-                            return java.util.regex.Pattern.compile(pattern.toString()).matcher(artifactUri).find()
-                        } catch (Exception pe) {
-                            return false
-                        }
-                    }
-
-                    if (matches) {
-                        matchedTypeKey = typeKey
-                        matchedConfig = typeDef
-                        break
-                    }
+                if (modeText) {
+                    instructionBuffer.append("<!-- ============================================================= -->\n")
+                    instructionBuffer.append("<!-- ARTIFACT DIRECTIVE: ${matchedCategory.toUpperCase()} [${normalizedMode.toUpperCase()}] -->\n")
+                    instructionBuffer.append("<!-- ============================================================= -->\n")
+                    instructionBuffer.append(modeText.trim()).append("\n\n")
                 }
 
-                if (!matchedConfig && artifactTypes.containsKey("XML_SCREEN")) {
-                    matchedConfig = artifactTypes.get("XML_SCREEN") as Map
-                }
-
-                if (matchedConfig) {
-                    String artifactInstructionLoc = matchedConfig.instructionUri
-                    String artifactText = loadResourceText(artifactInstructionLoc)
-                    if (artifactText) {
-                        instructionBuffer.append("<!-- ============================================================= -->\n")
-                        instructionBuffer.append("<!-- ARTIFACT DIRECTIVES: ${matchedTypeKey} -->\n")
-                        instructionBuffer.append("<!-- ============================================================= -->\n")
-                        instructionBuffer.append(artifactText.trim())
-                        instructionBuffer.append("\n\n")
-                    }
-                    context.schemaUri = matchedConfig.schemaUri
-                    context.editorComponent = matchedConfig.editorComponent
-                }
-                context.detectedArtifactType = matchedTypeKey
-
-                // 4. Layer 2.5: Mode-Specific Operational Directives (Step C)
-                String normalizedMode = (mode ?: 'build').toLowerCase().trim()
-                instructionBuffer.append("<!-- ============================================================= -->\n")
-                instructionBuffer.append("<!-- CURRENT OPERATION MODE: ${normalizedMode.toUpperCase()} -->\n")
-                instructionBuffer.append("<!-- ============================================================= -->\n")
-
-                if (normalizedMode == 'plan') {
-                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: PLAN MODE
-- You are strictly operating as an Architectural Formulator and Planner.
-- DO NOT generate complete runnable XML files, and DO NOT invoke file mutation tools.
-- Output ONLY an architectural design specification in your message response.
-- In your JSON response envelope, set "rawXmlContent": null, "astTree": null.
-- Provide a clear, structured Markdown breakdown including:
-  1. High-level architecture and Mantle UDM entity mappings (e.g. mantle.party.Party, Person, etc.).
-  2. UI layout structure, forms, tables, and container hierarchy.
-  3. Security and HIPAA compliance rules enforced.
-  4. Numbered, step-by-step implementation tasks ready for execution in BUILD mode.
-""")
-                } else if (normalizedMode == 'discuss') {
-                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: DISCUSS MODE
-- You are acting as an architectural peer discussing Intent, Trade-offs, and Architectural Decision Records (ADRs).
-- DO NOT generate raw XML screen markup or mutate files.
-- In your JSON response envelope, set "rawXmlContent": null, "astTree": null.
-- Clarify domain rules, entity modeling choices, and state transitions collaboratively.
-""")
-                } else if (normalizedMode == 'test') {
-                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: TEST MODE
-- You are generating declarative test verification suites and assertions.
-- Adhere strictly to the TestPayload schema and Moqui test assertion syntax.
-""")
-                } else {
-                    // Default / Build Mode
-                    instructionBuffer.append("""### OPERATIONAL DIRECTIVE: BUILD MODE
-- You are actively mutating or generating software artifacts.
-- Produce production-grade, syntactically clean declarative Moqui XML matching the specified schemas.
-- Provide the complete artifact markup in "rawXmlContent" or call the appropriate mutation tool.
-""")
-                }
-                instructionBuffer.append("\n\n")
-
-                // 5. Layer 3: Dynamic Facet Overlays
+                // 4. Layer 4: Dynamic Facet Overlays
                 Map facetMap = (facets ?: [:]) as Map
-                Map facetInstructionMap = (registry.facetInstructionMap ?: [:]) as Map
-
-                facetInstructionMap.each { facetKey, mappingObj ->
-                    String expectedVal = mappingObj.conditionValue?.toString()
-                    String instructionLoc = mappingObj.instructionUri?.toString()
-                    String actualVal = facetMap.get(facetKey)?.toString()
-
-                    if (expectedVal != null && actualVal != null && expectedVal.equalsIgnoreCase(actualVal)) {
-                        String facetText = loadResourceText(instructionLoc)
-                        if (facetText) {
-                            instructionBuffer.append("<!-- ============================================================= -->\n")
-                            instructionBuffer.append("<!-- COMPLIANCE FACET OVERLAY: ${facetKey}=${actualVal} -->\n")
-                            instructionBuffer.append("<!-- ============================================================= -->\n")
-                            instructionBuffer.append(facetText.trim())
-                            instructionBuffer.append("\n\n")
-                        }
+                if (facetMap.hipaa == "true" || facetMap.hipaa == true) {
+                    String hipaaText = loadResourceText("component://agi-ai/mcp/instructions/facets/hipaa.md")
+                    if (hipaaText) {
+                        instructionBuffer.append("<!-- ============================================================= -->\n")
+                        instructionBuffer.append("<!-- COMPLIANCE FACET OVERLAY: HIPAA -->\n")
+                        instructionBuffer.append("<!-- ============================================================= -->\n")
+                        instructionBuffer.append(hipaaText.trim()).append("\n\n")
+                    }
+                }
+                if (facetMap.multiTenant == "true" || facetMap.multiTenant == true) {
+                    String tenantText = loadResourceText("component://agi-ai/mcp/instructions/facets/multi-tenant.md")
+                    if (tenantText) {
+                        instructionBuffer.append(tenantText.trim()).append("\n\n")
                     }
                 }
 
