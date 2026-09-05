@@ -53,8 +53,9 @@ List rawTools = toolsResult.tools ?: toolsResult.toolsList ?: []
 
 List openAiTools = []
 rawTools.each { tool ->
-    boolean isReadOnly = tool.readOnly == true
-
+    // Handle Boolean, String 'true', or common naming variations
+    boolean isReadOnly = (tool.readOnly == true || tool.readOnly == "true" || tool.isReadOnly == true || tool.isReadOnly == "true")
+    
     // In 'plan' or 'discuss' mode, only allow read-only tools
     if (["plan", "discuss"].contains(currentMode) && !isReadOnly) {
         return
@@ -98,6 +99,32 @@ rawTools.each { tool ->
         ]
     ])
 }
+
+// FALLBACK: Ensure get_ScreenArchetypeList is ALWAYS available in Plan mode
+if (!openAiTools.any { it.function?.name?.toLowerCase()?.contains("archetype") }) {
+    rawTools.add([
+        name: "get_ScreenArchetypeList",
+        serviceCallName: "org.moqui.ai.mcp.LayoutServices.get#ScreenArchetypeList",
+        readOnly: true
+    ])
+    openAiTools.add([
+        type: "function",
+        function: [
+            name: "get_ScreenArchetypeList",
+            description: "Discovers and lists all canonical screen archetypes available in the workspace. Returns archetype names, URIs, and layout descriptions.",
+            parameters: [
+                type: "object",
+                properties: [
+                    targetComponent: [
+                        type: "string",
+                        description: "The target component to scan (default: nursinghome)"
+                    ]
+                ]
+            ]
+        ]
+    ])
+}
+
 ec.logger.info("🔧 [PROXY LOOP TOOLS] Exposing ${openAiTools.size()} MCP tool specs for mode '${currentMode}' (Total discovered: ${rawTools.size()}).")
 
 // =====================================================================================
@@ -124,20 +151,42 @@ Place all screen <parameter> tags directly under <screen>, preceding <actions> a
 
 if (currentMode == "plan") {
     systemInstruction += """\n
-### MANDATORY OUTPUT FORMAT FOR PLAN MODE:
-You are acting strictly as an Architectural Formulator. You must return your final response as a valid JSON completion object matching this schema:
+### MANDATORY PROTOCOL FOR PLAN MODE:
+1. ARCHETYPE DISCOVERY: You MUST examine available canonical archetypes using discovery tools before formulating a plan.
+2. NO HALLUCINATIONS: 'recommendedArchetype' and 'recommendedArchetypeUri' MUST match an exact archetype name and URI discovered on disk (e.g., master-detail, lookup-modal, etc.). Do not fabricate template names.
+3. OUTPUT FORMAT: Return your final response as a single, valid JSON completion object matching this exact schema:
 {
   "status": "PLANNED",
   "cleanArtifactUri": "component://${targetComponent}/screen/${targetComponent}/[CleanSubdirectory]/[ScreenName].xml",
-  "recommendedArchetype": "lookup-modal | master-detail | single-form | blank",
+  "recommendedArchetype": "[exact name from discovery]",
+  "recommendedArchetypeUri": "[exact uri from discovery]",
   "suggestedEntities": [
     "mantle.party.Party",
     "mantle.party.Person"
   ],
-  "architectureSummary": "High-level architectural design, HIPAA encryption rules, and UDM extensions...",
+  "screenContract": {
+    "requiredParameters": ["partyId"],
+    "optionalParameters": [],
+    "requiredPermissions": ["PATIENT_VIEW"],
+    "transitions": [
+      { "name": "updatePatient", "service": "mantle.party.PartyServices.update#Person" }
+    ]
+  },
+  "entityFieldBindings": [
+    {
+      "entity": "mantle.party.Person",
+      "fields": ["partyId", "firstName", "lastName", "birthDate"],
+      "targetWidget": "ResidentSummaryForm"
+    }
+  ],
+  "securityAndHipaaRules": [
+    "SSN and MRN must have encrypt='true' or be masked in displays",
+    "Prescription mutations must run under audit-log enabled entities"
+  ],
+  "architectureSummary": "Detailed architectural rationale, UDM extensions, and HIPAA safeguards...",
   "formulationSteps": [
     "1. Declare screen parameters...",
-    "2. Prepare entity-find-one actions for Person...",
+    "2. Prepare actions for Person...",
     "3. Structure read-only summary card...",
     "4. Add form-lists for prescriptions and allergies..."
   ]
@@ -165,7 +214,7 @@ List messages = [
 // STEP 3: MULTI-TURN ORCHESTRATION LOOP (Side-Effect Aware)
 // =====================================================================================
 int currentTurn = 0
-int MAX_TURNS = currentMode == "plan" ? 3 : 6
+int MAX_TURNS = currentMode == "plan" ? 5 : 8
 String finalArtifactUri = null
 String finalMessage = ""
 boolean executionSuccess = false
@@ -176,13 +225,44 @@ try {
         ec.logger.info("📡 [AGI PROXY LOOP] Starting Turn ${currentTurn} of ${MAX_TURNS} (Mode: ${currentMode}, Model: ${modelName})...")
 
         Map requestPayload = [
-            model: modelName,
-            messages: messages,
-            temperature: currentMode == "plan" ? 0.3 : 0.2
+            model      : modelName,
+            messages   : messages,
+            temperature: currentMode == "plan" ? 0.2 : 0.2
         ]
-        if (openAiTools.size() > 0) {
-            requestPayload.tools = openAiTools
-            requestPayload.tool_choice = "auto"
+
+        // Track whether archetype discovery has already succeeded in history
+        boolean hasArchetypesInHistory = messages.any { msg ->
+            msg.role == "tool" && (msg.name?.contains("Archetype") || msg.content?.contains("archetype"))
+        }
+
+        if (currentMode == "plan") {
+            if (currentTurn == 1 && !hasArchetypesInHistory) {
+                // Turn 1: Force discovery tool call (no response_format allowed here)
+                def discoveryTool = openAiTools.find { 
+                    String fn = (it.function?.name ?: "").toLowerCase()
+                    fn.contains("archetype") || fn.contains("screenarchetype") || fn.contains("layout")
+                }
+                if (discoveryTool) {
+                    ec.logger.warn("🎯 [PLAN TURN 1] Forcing tool execution: ${discoveryTool.function.name}")
+                    requestPayload.tools = [ discoveryTool ]
+                    requestPayload.tool_choice = [
+                        type: "function",
+                        function: [ name: discoveryTool.function.name ]
+                    ]
+                }
+            } else {
+                // Turn 2+: DISALLOW further tool calls; force pure JSON plan synthesis
+                ec.logger.info("🔒 [PLAN TURN ${currentTurn}] Locking tools; forcing JSON completion synthesis.")
+                requestPayload.tools = null
+                requestPayload.tool_choice = "none"
+                requestPayload.response_format = [ type: "json_object" ]
+            }
+        } else {
+            // Build / Mutation Mode
+            if (openAiTools.size() > 0) {
+                requestPayload.tools = openAiTools
+                requestPayload.tool_choice = "auto"
+            }
         }
 
         // 3.1 HTTP POST to Model Endpoint
@@ -227,12 +307,12 @@ try {
             return
         }
 
+        // Add assistant message to history
         messages.add(assistantMessage)
         List toolCalls = assistantMessage.tool_calls ?: []
 
         if (toolCalls.size() > 0) {
             boolean turnHadErrors = false
-            boolean onlyReadOnlyTools = true
 
             for (def call in toolCalls) {
                 String toolCallId = call.id ?: "call_${System.currentTimeMillis()}"
@@ -252,13 +332,6 @@ try {
                     (t.command && t.command.replace("/", "").replace("-", "_") == calledName)
                 }
 
-                boolean isToolReadOnly = matchedTool?.readOnly == true
-                if (!isToolReadOnly) {
-                    onlyReadOnlyTools = false
-                }
-
-                ec.logger.info("🚀 [AGENT TOOL EXECUTION - Turn ${currentTurn}] Model called [${calledName}] (readOnly: ${isToolReadOnly}) with args: ${toolArgs}")
-
                 if (!matchedTool || !matchedTool.serviceCallName) {
                     ec.logger.error("❌ Could not resolve serviceCallName for tool: ${calledName}")
                     turnHadErrors = true
@@ -273,87 +346,64 @@ try {
 
                 String serviceName = matchedTool.serviceCallName
                 if (!toolArgs.targetComponent) toolArgs.targetComponent = targetComponent
-
-                // Clean & normalize URIs in arguments
                 if (toolArgs.artifactUri) {
                     toolArgs.artifactUri = cleanScreenUri(toolArgs.artifactUri.toString(), targetComponent)
                 } else if (artifactUri) {
                     toolArgs.artifactUri = cleanScreenUri(artifactUri, targetComponent)
                 }
 
-                if (serviceName == "McpServices.mcp#ToolsCall") {
-                    toolArgs.name = calledName
-                }
                 ec.logger.info("🔧 [HARNESS CALL] Invoking ${serviceName} with: ${toolArgs}")
-
                 Map toolResult = [:]
-                boolean executionFailed = false
-                String caughtExceptionMsg = null
 
                 try {
                     ec.transaction.runRequireNew(0, "Executing isolated agent tool ${calledName}", {
                         toolResult = ec.service.sync().name(serviceName).parameters(toolArgs).call()
-                        if (ec.message.hasError()) {
-                            executionFailed = true
-                        }
                     })
                 } catch (Exception ex) {
-                    executionFailed = true
-                    caughtExceptionMsg = ex.message
-                    ec.logger.warn("⚠️ Exception during isolated tool execution: ${ex.message}", ex)
+                    turnHadErrors = true
+                    ec.logger.warn("⚠️ Exception during tool execution: ${ex.message}", ex)
                 }
 
-                if (executionFailed || ec.message.hasError() || toolResult?.status == "error") {
-                    String serviceErrors = ec.message.getErrorsString() ?: caughtExceptionMsg ?: toolResult?.error ?: "Unknown tool execution error"
+                if (turnHadErrors || ec.message.hasError()) {
+                    String serviceErrors = ec.message.getErrorsString() ?: "Tool execution failed"
                     ec.message.clearAll()
-                    turnHadErrors = true
-
-                    ec.logger.warn("⚠️ [TOOL ERROR - Turn ${currentTurn}] ${serviceName} failed: ${serviceErrors}")
-
                     messages.add([
                         role: "tool",
                         tool_call_id: toolCallId,
                         name: calledName,
-                        content: JsonOutput.toJson([
-                            status: "error",
-                            error: serviceErrors,
-                            message: "Tool '${calledName}' execution failed: ${serviceErrors}. Check file paths or parameters and try again."
-                        ])
+                        content: JsonOutput.toJson([ status: "error", error: serviceErrors ])
                     ])
                 } else {
-                    if (toolResult?.artifactUri) {
-                        finalArtifactUri = cleanScreenUri(toolResult.artifactUri.toString(), targetComponent)
-                    } else if (toolResult?.targetArtifactUri) {
-                        finalArtifactUri = cleanScreenUri(toolResult.targetArtifactUri.toString(), targetComponent)
-                    } else if (toolArgs.artifactUri && !isToolReadOnly) {
-                        finalArtifactUri = cleanScreenUri(toolArgs.artifactUri.toString(), targetComponent)
-                    }
+                    if (toolResult?.artifactUri) finalArtifactUri = cleanScreenUri(toolResult.artifactUri.toString(), targetComponent)
+                    if (toolResult?.targetArtifactUri) finalArtifactUri = cleanScreenUri(toolResult.targetArtifactUri.toString(), targetComponent)
 
-                    ec.logger.info("✅ [TOOL SUCCESS - Turn ${currentTurn}] ${serviceName} returned: ${toolResult?.keySet()}")
-
+                    ec.logger.info("✅ [TOOL SUCCESS - Turn ${currentTurn}] ${serviceName} returned results.")
                     messages.add([
                         role: "tool",
                         tool_call_id: toolCallId,
                         name: calledName,
-                        content: JsonOutput.toJson([
-                            status: "success",
-                            result: toolResult ?: [:]
-                        ])
+                        content: JsonOutput.toJson([ status: "success", result: toolResult ?: [:] ])
                     ])
                 }
             }
 
-            if (!turnHadErrors && !onlyReadOnlyTools) {
+            // In Plan mode, after the tool executes, do NOT complete yet; let Turn 2 synthesize.
+            // In Mutation mode, if a mutation tool succeeded, we can complete.
+            boolean isReadOnlyToolCall = toolCalls.every { call ->
+                rawTools.find { it.name == call.function?.name }?.readOnly == true
+            }
+
+            if (!turnHadErrors && !isReadOnlyToolCall && currentMode != "plan") {
                 executionSuccess = true
                 finalMessage = "Successfully executed dynamic tool sequence."
-            } else if (onlyReadOnlyTools && !turnHadErrors) {
-                ec.logger.info("🔄 [CONTINUING MULTI-TURN] Turn ${currentTurn} read-only inspection complete. Requesting formulation synthesis from model...")
             } else {
-                ec.logger.info("🔄 [SELF-HEALING RE-PROMPT] Feeding error response back to Model for Turn ${currentTurn + 1}...")
+                ec.logger.info("🔄 [CONTINUING MULTI-TURN] Turn ${currentTurn} complete. Requesting formulation synthesis from model...")
             }
 
         } else {
-            finalMessage = assistantMessage.content ?: "Prompt processed with no direct tool calls."
+            // Model returned pure text / JSON synthesis (no further tool calls)
+            finalMessage = assistantMessage.content ?: ""
+            ec.logger.info("🏁 [SYNTHESIS COMPLETE - Turn ${currentTurn}] Content length: ${finalMessage.length()} chars")
             executionSuccess = true
         }
     }
@@ -377,29 +427,32 @@ try {
             if (parsedContent && parsedContent.cleanArtifactUri) {
                 cleanTargetUri = cleanScreenUri(parsedContent.cleanArtifactUri.toString(), targetComponent)
             }
-
+        
             Map planResponse = [
-                status              : "PLANNED",
-                type                : "PLAN_FORMULATION",
-                targetArtifactUri   : cleanTargetUri,
-                createdArtifactUri  : cleanTargetUri,
-                recommendedArchetype: parsedContent?.recommendedArchetype ?: "master-detail",
-                suggestedEntities  : parsedContent?.suggestedEntities ?: ["mantle.party.Person"],
-                architectureSummary : parsedContent?.architectureSummary ?: finalMessage,
-                formulationSteps    : parsedContent?.formulationSteps ?: [],
-                message             : parsedContent?.architectureSummary ?: finalMessage,
-                rawXmlContent       : null,
-                astTree             : null,
-                files               : []
+                status                 : "PLANNED",
+                type                   : "PLAN_FORMULATION",
+                targetArtifactUri      : cleanTargetUri,
+                createdArtifactUri     : cleanTargetUri,
+                recommendedArchetype   : parsedContent?.recommendedArchetype ?: "master-detail",
+                recommendedArchetypeUri: parsedContent?.recommendedArchetypeUri ?: "",
+                suggestedEntities      : parsedContent?.suggestedEntities ?: ["mantle.party.Person"],
+                screenContract         : parsedContent?.screenContract ?: [:],
+                entityFieldBindings    : parsedContent?.entityFieldBindings ?: [],
+                securityAndHipaaRules  : parsedContent?.securityAndHipaaRules ?: [],
+                architectureSummary    : parsedContent?.architectureSummary ?: finalMessage,
+                formulationSteps       : parsedContent?.formulationSteps ?: [],
+                message                : parsedContent?.architectureSummary ?: finalMessage,
+                rawXmlContent          : null,
+                astTree                : null,
+                files                  : []
             ]
-
+        
             context.completionText     = JsonOutput.toJson(planResponse)
             context.status             = "PLANNED"
             context.createdArtifactUri = cleanTargetUri
             context.rawXmlContent      = null
         } else {
             // BUILD / MUTATION MODE:
-            // Propagate rawXmlContent, files, and astTree cleanly to ESAT
             String finalXml = parsedContent?.rawXmlContent ?: (strippedText.startsWith("<screen") || strippedText.startsWith("<?xml") ? strippedText : null)
             List filesList = (parsedContent?.files instanceof List) ? parsedContent.files : []
             def finalAst = parsedContent?.astTree ?: null
