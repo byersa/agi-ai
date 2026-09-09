@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+
+    <!-- ===================================================================== -->
+    <!-- GET SCREEN ARCHETYPE LIST                                             -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="ScreenArchetypeList" type="inline" authenticate="anonymous-all">
+        <description>Discovers and lists all canonical screen archetypes available in workspace resources.</description>
+        <in-parameters>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="archetypes" type="List"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.resource.ResourceReference
+
+                List results = []
+                List searchPaths = [
+                    "component://agi-ide/resources/screen/archetype",
+                    "component://agi-ai/mcp/resources/screen/archetype"
+                ]
+
+                searchPaths.each { basePath ->
+                    try {
+                        ResourceReference dirRef = ec.resource.getLocationReference(basePath)
+                        if (dirRef != null && dirRef.getExists() && dirRef.isDirectory()) {
+                            dirRef.directoryEntries.each { entry ->
+                                if (entry.fileName.endsWith(".xml")) {
+                                    String rawName = entry.fileName.replace(".xml", "")
+                                    results.add([
+                                        name: rawName,
+                                        uri: entry.location,
+                                        description: "Canonical ${rawName} screen archetype layout"
+                                    ])
+                                }
+                            }
+                        }
+                    } catch (Exception ignore) {}
+                }
+
+                context.archetypes = results
+            ]]></script>
+        </actions>
+    </service>
+
+</services>
