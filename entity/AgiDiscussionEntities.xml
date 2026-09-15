@@ -1,0 +1,271 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-3.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- 1. DISCUSSION CONTAINER (Boundary / Domain Context)                   -->
+    <!-- ===================================================================== -->
+    <entity entity-name="AgiDiscussion" package="org.moqui.ai.discussion" table-name="AGI_DISCUSSION"
+            enable-audit-log="true" authorize-skip="true">
+        <description>
+            The digital boundary for architectural, elicitation, or operational discussions.
+            Can represent an abstract blueprint/template or an active instance anchored to an app.
+        </description>
+
+        <field name="discussionId" type="id" is-pk="true"/>
+        <field name="name" type="text-medium" not-null="true"/>
+        <field name="shortName" type="text-short"/>
+        <field name="targetComponent" type="text-short">
+            <description>Domain app anchor, e.g. 'nursinghome', 'rainwater', 'mymoqui-home'</description>
+        </field>
+        <field name="targetArtifactUri" type="text-medium">
+            <description>Optional direct screen/service/entity anchor URI</description>
+        </field>
+        <field name="statusId" type="id" default="AgdStatusActive"/>
+        
+        <!-- Category & Type Enums (Abstract Blueprint vs Concrete Session) -->
+        <field name="discussionCategoryEnumId" type="id" default="AitCategoryInstance">
+            <description>AitCategoryAbstract (Template/Repo) vs AitCategoryInstance (Active thread)</description>
+        </field>
+        <field name="discussionTypeEnumId" type="id" default="AitDiscElicitation">
+            <description>Elicitation, TaskPlanning, ArchitectureReview, QualityAudit, Repository</description>
+        </field>
+
+        <!-- Ownership & Temporal Boundaries -->
+        <field name="orgId" type="id"/>
+        <field name="fromDate" type="date-time"/>
+        <field name="thruDate" type="date-time"/>
+
+        <!-- Promotion Bridge to Mantle UDM WorkEffort -->
+        <field name="promotedWorkEffortId" type="id">
+            <description>Populated when consensus/milestone is reached and elevated to physical UDM task</description>
+        </field>
+
+        <!-- Telemetry Rollups for Fast Tree & List Displays -->
+        <field name="messageCount" type="number-integer" default="0"/>
+        <field name="lastActivityDate" type="date-time"/>
+
+        <!-- Relationships -->
+        <relationship type="one" title="DiscussionStatus" related="moqui.basic.StatusItem">
+            <key-map field-name="statusId"/>
+        </relationship>
+        <relationship type="one" title="DiscussionCategory" related="moqui.basic.Enumeration">
+            <key-map field-name="discussionCategoryEnumId" related="enumId"/>
+        </relationship>
+        <relationship type="one" title="DiscussionType" related="moqui.basic.Enumeration">
+            <key-map field-name="discussionTypeEnumId" related="enumId"/>
+        </relationship>
+        <relationship type="one" title="OwningOrg" related="mantle.party.Organization">
+            <key-map field-name="orgId" related="partyId"/>
+        </relationship>
+        <relationship type="one" title="PromotedWorkEffort" related="mantle.work.effort.WorkEffort">
+            <key-map field-name="promotedWorkEffortId" related="workEffortId"/>
+        </relationship>
+
+        <index name="AGI_DISC_COMP"><index-field name="targetComponent"/></index>
+        <index name="AGI_DISC_ART"><index-field name="targetArtifactUri"/></index>
+    </entity>
+
+    <!-- Multi-Parent / Container Relationships (e.g. Repository linking to active Project) -->
+    <entity entity-name="AgiDiscussionRelationship" package="org.moqui.ai.discussion" table-name="AGI_DISCUSSION_RELATIONSHIP">
+        <field name="discussionRelationshipId" type="id" is-pk="true"/>
+        <field name="parentDiscussionId" type="id" not-null="true"/>
+        <field name="childDiscussionId" type="id" not-null="true"/>
+        <field name="relationshipTypeEnumId" type="id"/>
+        <field name="fromDate" type="date-time"/>
+        <field name="thruDate" type="date-time"/>
+
+        <relationship type="one" title="ParentDiscussion" related="org.moqui.ai.discussion.AgiDiscussion">
+            <key-map field-name="parentDiscussionId" related="discussionId"/>
+        </relationship>
+        <relationship type="one" title="ChildDiscussion" related="org.moqui.ai.discussion.AgiDiscussion">
+            <key-map field-name="childDiscussionId" related="discussionId"/>
+        </relationship>
+    </entity>
+
+    <!-- Container-Level Facets & Global Constraints -->
+    <entity entity-name="AgiDiscussionFacet" package="org.moqui.ai.discussion" table-name="AGI_DISCUSSION_FACET"
+            cache="true" enable-audit-log="true">
+        <description>
+            High-level key-value metadata tags and agent directives attached to the entire Discussion Container.
+            Inherited across all conversation turns within the discussion.
+        </description>
+
+        <field name="discussionFacetId" type="id" is-pk="true"/>
+        <field name="discussionId" type="id" not-null="true"/>
+        <field name="facetKey" type="text-short" not-null="true"/>
+        <field name="facetValue" type="text-medium" not-null="true"/>
+        <field name="facetTypeEnumId" type="id"/>
+
+        <relationship type="one" title="Discussion" related="org.moqui.ai.discussion.AgiDiscussion">
+            <key-map field-name="discussionId"/>
+        </relationship>
+        <relationship type="one" title="FacetType" related="moqui.basic.Enumeration">
+            <key-map field-name="facetTypeEnumId" related="enumId"/>
+        </relationship>
+
+        <index name="AGI_DFACET_DISC"><index-field name="discussionId"/></index>
+        <index name="AGI_DFACET_KV"><index-field name="facetKey"/><index-field name="facetValue"/></index>
+    </entity>
+
+    <!-- ===================================================================== -->
+    <!-- 2. DISCUSSION MESSAGE (Recursive Conversational Turns & Sub-Topics)   -->
+    <!-- ===================================================================== -->
+    <entity entity-name="AgiMessage" package="org.moqui.ai.discussion" table-name="AGI_MESSAGE"
+            enable-audit-log="true">
+        <description>
+            A recursive conversational turn or topic node. Root messages attach to an AgiDiscussion.
+            Threaded replies and sub-topics link to parentMessageId.
+        </description>
+
+        <field name="messageId" type="id" is-pk="true"/>
+        <field name="discussionId" type="id" not-null="true">
+            <description>Root container boundary</description>
+        </field>
+        <field name="parentMessageId" type="id">
+            <description>Threaded reply or sub-topic pointer</description>
+        </field>
+
+        <field name="senderRoleEnumId" type="id" default="AsrUser">
+            <description>AsrUser, AsrAssistant, AsrSystemTool, AsrSupervisor</description>
+        </field>
+        <field name="partyId" type="id">
+            <description>Author party ID (or SYSTEM_AI_AGENT)</description>
+        </field>
+        <field name="statusId" type="id" default="AmsActive"/>
+
+        <!-- Anchor to Target Artifact & Maria Coordinates -->
+        <field name="targetArtifactUri" type="text-medium">
+            <description>e.g. component://nursinghome/screen/nursinghome/Resident/ResidentDetail.xml</description>
+        </field>
+        <field name="targetMariaId" type="text-short"/>
+
+        <!-- Direct Promotion Link to WorkEffort or AgiPayload -->
+        <field name="promotedWorkEffortId" type="id"/>
+        <field name="stagedPayloadId" type="id"/>
+
+        <field name="entryDate" type="date-time"/>
+
+        <!-- Relationships -->
+        <relationship type="one" title="ParentMessage" related="org.moqui.ai.discussion.AgiMessage">
+            <key-map field-name="parentMessageId" related="messageId"/>
+        </relationship>
+        <relationship type="one" title="Discussion" related="org.moqui.ai.discussion.AgiDiscussion">
+            <key-map field-name="discussionId"/>
+        </relationship>
+        <relationship type="one" title="Author" related="mantle.party.Person">
+            <key-map field-name="partyId"/>
+        </relationship>
+        <relationship type="one" title="SenderRole" related="moqui.basic.Enumeration">
+            <key-map field-name="senderRoleEnumId" related="enumId"/>
+        </relationship>
+        <relationship type="one" title="MessageStatus" related="moqui.basic.StatusItem">
+            <key-map field-name="statusId"/>
+        </relationship>
+        <relationship type="one" title="PromotedWorkEffort" related="mantle.work.effort.WorkEffort">
+            <key-map field-name="promotedWorkEffortId" related="workEffortId"/>
+        </relationship>
+
+        <index name="AGI_MSG_DISC"><index-field name="discussionId"/></index>
+        <index name="AGI_MSG_PARENT"><index-field name="parentMessageId"/></index>
+    </entity>
+
+    <!-- Decoupled Content Block (Markdown, JSON Screen Contract, or Tool Output) -->
+    <entity entity-name="AgiMessageContent" package="org.moqui.ai.discussion" table-name="AGI_MESSAGE_CONTENT">
+        <field name="messageId" type="id" is-pk="true"/>
+        <field name="contentSeqId" type="id" is-pk="true" default="1"/>
+        <field name="contentTypeEnumId" type="id" not-null="true">
+            <description>mctMarkdown, mctJsonBlueprint, mctXmlScreen, mctSystemPrompt</description>
+        </field>
+        <field name="title" type="text-medium"/>
+        <field name="bodyText" type="text-very-long" allow-html="any"/>
+        <field name="resourceLocation" type="text-medium">
+            <description>Path to physical or MCP resource if external</description>
+        </field>
+
+        <relationship type="one" title="Message" related="org.moqui.ai.discussion.AgiMessage">
+            <key-map field-name="messageId"/>
+        </relationship>
+        <relationship type="one" title="ContentType" related="moqui.basic.Enumeration">
+            <key-map field-name="contentTypeEnumId" related="enumId"/>
+        </relationship>
+    </entity>
+
+    <!-- ===================================================================== -->
+    <!-- 3. DISCUSSION FACETS & METADATA OVERLAYS                              -->
+    <!-- ===================================================================== -->
+    <entity entity-name="AgiMessageFacet" package="org.moqui.ai.discussion" table-name="AGI_MESSAGE_FACET"
+            cache="true" enable-audit-log="true">
+        <description>
+            First-class key-value metadata tags and agent directives attached to messages or turns.
+            Injects dynamically into LLM System Instructions (e.g. hipaa="true", domain="clinical").
+        </description>
+
+        <field name="messageFacetId" type="id" is-pk="true"/>
+        <field name="messageId" type="id" not-null="true"/>
+        <field name="facetKey" type="text-short" not-null="true"/>
+        <field name="facetValue" type="text-medium" not-null="true"/>
+        <field name="facetTypeEnumId" type="id"/>
+        <field name="isInheritable" type="text-indicator" default="Y">
+            <description>If Y, child replies/turns automatically inherit this directive</description>
+        </field>
+
+        <relationship type="one" title="Message" related="org.moqui.ai.discussion.AgiMessage">
+            <key-map field-name="messageId"/>
+        </relationship>
+        <relationship type="one" title="FacetType" related="moqui.basic.Enumeration">
+            <key-map field-name="facetTypeEnumId" related="enumId"/>
+        </relationship>
+
+        <index name="AGI_FACET_MSG"><index-field name="messageId"/></index>
+        <index name="AGI_FACET_KV"><index-field name="facetKey"/><index-field name="facetValue"/></index>
+    </entity>
+
+    <!-- ===================================================================== -->
+    <!-- 4. SEED DATA DEFINITIONS (Enums & Statuses)                            -->
+    <!-- ===================================================================== -->
+    <seed-data>
+        <!-- Discussion Status Flow -->
+        <moqui.basic.StatusType description="Agi Discussion Status" statusTypeId="AgiDiscussionStatus"/>
+        <moqui.basic.StatusItem description="Active" statusId="AgdStatusActive" statusTypeId="AgiDiscussionStatus"/>
+        <moqui.basic.StatusItem description="In Formulation" statusId="AgdStatusFormulating" statusTypeId="AgiDiscussionStatus"/>
+        <moqui.basic.StatusItem description="Promoted / Closed" statusId="AgdStatusPromoted" statusTypeId="AgiDiscussionStatus"/>
+        <moqui.basic.StatusItem description="Archived" statusId="AgdStatusArchived" statusTypeId="AgiDiscussionStatus"/>
+
+        <!-- Message Status Flow -->
+        <moqui.basic.StatusType description="Agi Message Status" statusTypeId="AgiMessageStatus"/>
+        <moqui.basic.StatusItem description="Active" statusId="AmsActive" statusTypeId="AgiMessageStatus"/>
+        <moqui.basic.StatusItem description="Resolved" statusId="AmsResolved" statusTypeId="AgiMessageStatus"/>
+        <moqui.basic.StatusItem description="Archived" statusId="AmsArchived" statusTypeId="AgiMessageStatus"/>
+
+        <!-- Discussion Categories -->
+        <moqui.basic.EnumerationType description="Agi Discussion Category" enumTypeId="AgiDiscCategory"/>
+        <moqui.basic.Enumeration enumId="AitCategoryAbstract" description="Abstract Template / Canonical Pattern" enumTypeId="AgiDiscCategory"/>
+        <moqui.basic.Enumeration enumId="AitCategoryInstance" description="Concrete Solution Session" enumTypeId="AgiDiscCategory"/>
+
+        <!-- Discussion Types -->
+        <moqui.basic.EnumerationType description="Agi Discussion Type" enumTypeId="AgiDiscType"/>
+        <moqui.basic.Enumeration enumId="AitDiscElicitation" parentEnumId="AitCategoryInstance" description="Conversational Elicitation" enumTypeId="AgiDiscType"/>
+        <moqui.basic.Enumeration enumId="AitDiscArchitecture" parentEnumId="AitCategoryInstance" description="Architecture &amp; Schema Review" enumTypeId="AgiDiscType"/>
+        <moqui.basic.Enumeration enumId="AitDiscTemplate" parentEnumId="AitCategoryAbstract" description="Template Blueprint Repository" enumTypeId="AgiDiscType"/>
+
+        <!-- Sender Roles -->
+        <moqui.basic.EnumerationType description="Agi Message Sender Role" enumTypeId="AgiSenderRole"/>
+        <moqui.basic.Enumeration enumId="AsrUser" description="Human Designer / User" enumTypeId="AgiSenderRole"/>
+        <moqui.basic.Enumeration enumId="AsrAssistant" description="AI Agent Peer" enumTypeId="AgiSenderRole"/>
+        <moqui.basic.Enumeration enumId="AsrSystemTool" description="MCP Tool / Execution Harness" enumTypeId="AgiSenderRole"/>
+
+        <!-- Message Content Types -->
+        <moqui.basic.EnumerationType description="Agi Message Content Type" enumTypeId="AgiContentType"/>
+        <moqui.basic.Enumeration enumId="mctMarkdown" description="Markdown Prose" enumTypeId="AgiContentType"/>
+        <moqui.basic.Enumeration enumId="mctJsonBlueprint" description="Structured JSON Blueprint / Contract" enumTypeId="AgiContentType"/>
+        <moqui.basic.Enumeration enumId="mctXmlScreen" description="Moqui XML Screen Code" enumTypeId="AgiContentType"/>
+
+        <!-- Facet Types -->
+        <moqui.basic.EnumerationType description="Agi Facet Classification" enumTypeId="AgiFacetType"/>
+        <moqui.basic.Enumeration enumId="AftDirective" description="System Instruction Directive" enumTypeId="AgiFacetType"/>
+        <moqui.basic.Enumeration enumId="AftSecurity" description="HIPAA / Security Classification" enumTypeId="AgiFacetType"/>
+        <moqui.basic.Enumeration enumId="AftArchetype" description="Screen Archetype Reference" enumTypeId="AgiFacetType"/>
+    </seed-data>
+
+</entities>

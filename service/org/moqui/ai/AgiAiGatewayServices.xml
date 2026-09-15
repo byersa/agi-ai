@@ -23,6 +23,7 @@
             <parameter name="aiEndpointUrl"/>
             <parameter name="aiApiKey"/>
             <parameter name="aiModelName"/>
+            <parameter name="conversationHistory" type="List"/>
         </in-parameters>
         <out-parameters>
             <parameter name="completionText" type="String"/>

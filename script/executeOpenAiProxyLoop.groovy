@@ -172,8 +172,17 @@ userPromptBuilder.append(userPrompt)
 
 List messages = [
     [ role: "system", content: systemInstruction ],
-    [ role: "user",   content: userPromptBuilder.toString() ]
 ]
+// Ingest conversation history if provided
+List history = (context.conversationHistory instanceof List) ? context.conversationHistory : []
+history.each { turn ->
+    if (turn?.role && turn?.content) {
+        messages.add([ role: turn.role, content: turn.content ])
+    }
+}
+
+// Append the active user prompt
+messages.add([ role: "user", content: userPromptBuilder.toString() ])
 
 // =====================================================================================
 // STEP 3: MULTI-TURN ORCHESTRATION LOOP (Side-Effect Aware)

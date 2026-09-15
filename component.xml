@@ -4,6 +4,5 @@
            name="agi-ai" version="1.0.0">
     <component-dependencies>
         <depends-component name="moqui-mcp-2"/>
-        <depends-component name="moqui-adk"/>
     </component-dependencies>
 </component>

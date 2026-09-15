@@ -17,6 +17,11 @@
         <field name="targetMariaId" type="id-long"/>
         <field name="agiArtifactId" type="id"/>
         
+        <!-- Discussion & Elicitation Links -->
+        <field name="discussionId" type="id"/>
+        <field name="messageId" type="id"/>
+        <field name="isLeaf" type="text-indicator" default="Y"/>
+
         <!-- Mantle & Wiki Associations -->
         <field name="workEffortId" type="id"/>
         <field name="wikiPageId" type="id"/>
@@ -32,7 +37,6 @@
         <field name="revisionNumber" type="number-integer" default="1"/>
         <field name="contentSha256" type="text-medium"/>
         <field name="createdDate" type="date-time"/>
-        <!-- Note: lastUpdatedStamp is automatically injected and managed by Moqui; do not declare it explicitly -->
 
         <!-- Relationships -->
         <relationship type="one" title="Mode" related="moqui.basic.Enumeration">
@@ -40,6 +44,12 @@
         </relationship>
         <relationship type="one" title="Status" related="moqui.basic.StatusItem">
             <key-map field-name="statusId" related="statusId"/>
+        </relationship>
+        <relationship type="one" title="Discussion" related="org.moqui.ai.discussion.AgiDiscussion">
+            <key-map field-name="discussionId"/>
+        </relationship>
+        <relationship type="one" title="OriginMessage" related="org.moqui.ai.discussion.AgiMessage">
+            <key-map field-name="messageId"/>
         </relationship>
         <relationship type="one" related="org.moqui.ai.AgiArtifact">
             <key-map field-name="agiArtifactId"/>
@@ -54,6 +64,7 @@
             <key-map field-name="parentPayloadId" related="agiPayloadId"/>
         </relationship>
 
+        <index name="AGI_PLD_DISC"><index-field name="discussionId"/></index>
         <index name="AGI_PLD_WE"><index-field name="workEffortId"/></index>
         <index name="AGI_PLD_MODE"><index-field name="modeEnumId"/></index>
         <index name="AGI_PLD_ART"><index-field name="agiArtifactId"/></index>
