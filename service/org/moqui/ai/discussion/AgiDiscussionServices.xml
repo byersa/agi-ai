@@ -525,11 +525,83 @@
                         parentMessageId   : parentMessageId,
                         senderRoleEnumId  : "AsrAssistant",
                         content           : agentReply,
-                        title             : "AI Response",
+                        title             : effectiveMode == "plan" ? "Architecture Plan" : "AI Response",
                         targetArtifactUri : artUri
                     ])
                     .call()
 
+                String asstMsgId = recResult.messageId
+                context.assistantMessageId = asstMsgId
+
+                // 8. Phase 4: Formal Plan Persistence to AgiPayload
+                if (effectiveMode == "plan" && asstMsgId) {
+                    try {
+                        String payloadJson = null
+                        String planTitle = "Architecture Plan: " + (disc.name ?: comp)
+
+                        // Attempt to parse out structured JSON contract if wrapped in ESAT or code block
+                        if (agentReply.trim().startsWith("{") && agentReply.trim().endsWith("}")) {
+                            try {
+                                def parsedJson = new groovy.json.JsonSlurper().parseText(agentReply)
+                                if (parsedJson.astTree || parsedJson.files || parsedJson.plan) {
+                                    payloadJson = agentReply.trim()
+                                } else if (parsedJson.message) {
+                                    // Check if message itself contains an inner JSON block
+                                    def innerMatcher = parsedJson.message =~ /(?s)```json\s*(\{.*?\})\s*```/
+                                    if (innerMatcher.find()) {
+                                        payloadJson = innerMatcher.group(1).trim()
+                                    }
+                                }
+                            } catch (Exception ignore) {}
+                        }
+
+                        if (!payloadJson) {
+                            def jsonFenceMatcher = agentReply =~ /(?s)```json\s*(\{.*?\})\s*```/
+                            if (jsonFenceMatcher.find()) {
+                                payloadJson = jsonFenceMatcher.group(1).trim()
+                            }
+                        }
+
+                        // Fallback: If model returned pure text markdown, wrap it in a structured JSON plan envelope
+                        if (!payloadJson) {
+                            payloadJson = groovy.json.JsonOutput.toJson([
+                                mode        : "plan",
+                                planType    : "ARCHITECTURAL_BLUEPRINT",
+                                targetComponent: comp,
+                                artifactUri : artUri,
+                                planDetails : agentReply
+                            ])
+                        }
+
+                        // Create the AgiPayload record
+                        def newPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                        newPayload.modeEnumId = "AamPlan"
+                        newPayload.statusId = "PlsDraft"
+                        newPayload.targetComponent = comp
+                        newPayload.artifactUri = artUri
+                        newPayload.discussionId = discussionId
+                        newPayload.messageId = asstMsgId
+                        newPayload.title = planTitle
+                        newPayload.userPromptText = userPrompt
+                        newPayload.payloadJsonData = payloadJson
+                        newPayload.createdDate = ec.user.nowTimestamp
+                        newPayload.setSequencedIdPrimary()
+                        newPayload.create()
+
+                        // Link stagedPayloadId back onto the newly created AgiMessage
+                        def msgVal = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("messageId", asstMsgId)
+                            .one()
+                        if (msgVal) {
+                            msgVal.stagedPayloadId = newPayload.agiPayloadId
+                            msgVal.update()
+                        }
+
+                        ec.logger.info("📦 [dispatch#AgentTurn] Created AgiPayload #${newPayload.agiPayloadId} linked to AgiMessage #${asstMsgId}")
+                    } catch (Exception ex) {
+                        ec.logger.error("Failed to persist plan AgiPayload for message ${asstMsgId}: " + ex.message, ex)
+                    }
+                }
                 context.assistantMessageId = recResult.messageId
             ]]></script>
         </actions>
