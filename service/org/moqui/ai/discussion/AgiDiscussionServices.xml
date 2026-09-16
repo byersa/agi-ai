@@ -14,18 +14,25 @@
             <parameter name="targetComponent" default-value="nursinghome"/>
             <parameter name="targetArtifactUri"/>
             <parameter name="discussionId"/>
+            <parameter name="includeArchived" default-value="N"/>
         </in-parameters>
         <out-parameters>
             <parameter name="treeNodes" type="List"/>
         </out-parameters>
         <actions>
             <script><![CDATA[
+                boolean showArchived = (includeArchived == "Y" || includeArchived == true)
+
                 // Recursive message builder for a discussion container
                 def buildMessageTree
                 buildMessageTree = { String discId, String parentMsgId ->
                     def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                         .condition("discussionId", discId)
-                        .condition("senderRoleEnumId", "not-equals", "AsrAssistant") // Filter out assistant replies from the tree
+                        .condition("senderRoleEnumId", "not-equals", "AsrAssistant")
+
+                    if (!showArchived) {
+                        msgFind.condition("statusId", "not-equals", "AmsArchived")
+                    }
 
                     if (parentMsgId) {
                         msgFind.condition("parentMessageId", parentMsgId)
@@ -40,16 +47,20 @@
                             .condition("messageId", mId)
                             .list()
                         def titledContent = contents?.find { (it.title as boolean) }
-                        String displayTitle = titledContent?.title ?: (contents ? (contents[0].bodyText?.take(40) + "...") : "Topic #" + mId)
+                        String displayTitle = titledContent?.title ?: (contents ? (contents[0].bodyText?.take(45) + "...") : "Topic #" + mId)
 
                         return [
                             nodeKey              : "msg_" + mId,
                             id                   : mId,
                             messageId            : mId,
                             discussionId         : discId,
+                            parentMessageId      : msg.parentMessageId,
                             label                : displayTitle,
                             senderRoleEnumId     : msg.senderRoleEnumId,
                             statusId             : msg.statusId,
+                            isArchived           : (msg.statusId == "AmsArchived"),
+                            stagedPayloadId      : msg.stagedPayloadId,
+                            mode                 : (msg.stagedPayloadId ? "plan" : "discuss"),
                             children             : buildMessageTree(discId, mId)
                         ]
                     }
@@ -64,17 +75,19 @@
                     if (targetArtifactUri) discFind.condition("targetArtifactUri", targetArtifactUri)
                 }
 
+                if (!showArchived) {
+                    discFind.condition("statusId", "not-equals", "AgdStatusArchived")
+                }
+
                 def discussions = discFind.orderBy("discussionId").list()
 
                 context.treeNodes = discussions.collect { disc ->
                     String dId = disc.discussionId as String
 
-                    // Fetch container-level facets
                     def dFacets = ec.entity.find("org.moqui.ai.discussion.AgiDiscussionFacet")
                         .condition("discussionId", dId)
                         .list()
 
-                    // Fetch child discussions via AgiDiscussionRelationship graph edges
                     def rels = ec.entity.find("org.moqui.ai.discussion.AgiDiscussionRelationship")
                         .condition("parentDiscussionId", dId)
                         .list()
@@ -82,9 +95,12 @@
 
                     List childDiscNodes = []
                     if (relatedDiscIds && !relatedDiscIds.isEmpty()) {
-                        def childDiscs = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                        def childDiscsFind = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
                             .condition("discussionId", "in", relatedDiscIds)
-                            .list()
+                        if (!showArchived) {
+                            childDiscsFind.condition("statusId", "not-equals", "AgdStatusArchived")
+                        }
+                        def childDiscs = childDiscsFind.list()
                         childDiscNodes = childDiscs.collect { cd ->
                             [
                                 nodeKey              : "disc_" + cd.discussionId,
@@ -93,6 +109,7 @@
                                 label                : "🔗 " + cd.name,
                                 shortName            : cd.shortName,
                                 statusId             : cd.statusId,
+                                isArchived           : (cd.statusId == "AgdStatusArchived"),
                                 discussionTypeEnumId : cd.discussionTypeEnumId,
                                 targetComponent      : cd.targetComponent,
                                 targetArtifactUri    : cd.targetArtifactUri,
@@ -111,6 +128,7 @@
                         label                : disc.name ?: ("Discussion #" + dId),
                         shortName            : disc.shortName,
                         statusId             : disc.statusId,
+                        isArchived           : (disc.statusId == "AgdStatusArchived"),
                         discussionCategoryEnumId: disc.discussionCategoryEnumId,
                         discussionTypeEnumId : disc.discussionTypeEnumId,
                         targetComponent      : disc.targetComponent,
@@ -195,7 +213,6 @@
             <set field="context.discussion" from="discVal.getMap()"/>
 
             <script><![CDATA[
-                // Fetch Container Facets
                 def dFacets = ec.entity.find("org.moqui.ai.discussion.AgiDiscussionFacet")
                     .condition("discussionId", discussionId)
                     .list()
@@ -203,7 +220,6 @@
                 dFacets.each { fMap[it.facetKey] = it.facetValue }
                 context.containerFacets = fMap
 
-                // Fetch All Messages in Chronological Sequence
                 def msgList = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                     .condition("discussionId", discussionId)
                     .orderBy("entryDate")
@@ -262,7 +278,6 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
-                // Assistant turns leave partyId null so foreign key constraints on Person are not violated
                 String authorPartyId = senderRoleEnumId == "AsrAssistant" ? null : (ec.user.userId ?: null)
 
                 def newMsg = ec.entity.makeValue("org.moqui.ai.discussion.AgiMessage")
@@ -332,6 +347,7 @@
         <out-parameters>
             <parameter name="assistantMessageId"/>
             <parameter name="completionText"/>
+            <parameter name="stagedPayloadId"/>
         </out-parameters>
         <actions>
             <script><![CDATA[
@@ -346,14 +362,12 @@
                 String artUri = disc.targetArtifactUri ?: ""
                 String effectiveMode = (mode ?: "discuss").toLowerCase().trim()
 
-                // 1. Gather Container and Discussion Facets
                 def dFacets = ec.entity.find("org.moqui.ai.discussion.AgiDiscussionFacet")
                     .condition("discussionId", discussionId)
                     .list()
                 Map mergedFacets = [:]
                 dFacets.each { mergedFacets[it.facetKey] = it.facetValue }
 
-                // Helper to resolve resource from component path cascade
                 def loadFirstExisting = { List<String> paths ->
                     for (String path : paths) {
                         try {
@@ -369,7 +383,6 @@
 
                 StringBuilder systemInstruction = new StringBuilder()
 
-                // 2. LAYER A: Base Foundations & Guardrails (from agi-ide)
                 String baseFoundation = loadFirstExisting([
                     "component://agi-ide/mcp/instructions/base/system-foundation.md",
                     "component://agi-ai/mcp/instructions/base/system-foundation.md"
@@ -382,7 +395,6 @@
                 ])
                 if (guardrails) systemInstruction.append(guardrails.trim()).append("\n\n")
 
-                // 3. LAYER B: Domain/App-Specific Directives (e.g. Rainwater GIS or NursingHome HIPAA)
                 String domainDirectives = loadFirstExisting([
                     "component://${comp}/mcp/instructions/domain-instructions.md",
                     "component://${comp}/mcp/instructions/${comp}-domain.md"
@@ -394,8 +406,6 @@
                     systemInstruction.append(domainDirectives.trim()).append("\n\n")
                 }
 
-                // 4. LAYER C: Prompt / Mode / Tool Specific Instruction
-                // If caller provided an explicit instructionName, search targetComponent first, then agi-ide
                 String specificInstruction = null
                 if (instructionName) {
                     specificInstruction = loadFirstExisting([
@@ -405,7 +415,6 @@
                     ])
                 }
                 
-                // If no explicit instructionName or not found, fall back to Mode & Artifact directives
                 if (!specificInstruction) {
                     String artifactCategory = "generic"
                     if (artUri.contains("/screen/") || artUri.endsWith(".xml")) artifactCategory = "screen"
@@ -426,7 +435,6 @@
                     systemInstruction.append(specificInstruction.trim()).append("\n\n")
                 }
 
-// 5. Gather Preceding Conversation History for Thread Context
                 List conversationHistory = []
                 if (parentMessageId) {
                     List threadMessages = []
@@ -448,7 +456,6 @@
                             .list()
                         String text = contents ? contents*.bodyText.join("\n\n") : ""
 
-                        // Strip ESAT JSON wrapper if present
                         if (text.trim().startsWith("{") && text.trim().endsWith("}")) {
                             try {
                                 def parsed = new groovy.json.JsonSlurper().parseText(text)
@@ -464,7 +471,6 @@
                         currentTraceId = traceMsg.parentMessageId
                     }
 
-                    // Fallback: If linear ancestry produced only 1 message, grab the recent turns from this discussion
                     if (threadMessages.size() <= 1) {
                         def recentTurns = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                             .condition("discussionId", discussionId)
@@ -475,7 +481,6 @@
 
                         threadMessages = []
                         recentTurns.each { rMsg ->
-                            // Do not include the current user turn itself (added at end of prompt loop)
                             if (rMsg.messageId != parentMessageId) {
                                 def rConts = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
                                     .condition("messageId", rMsg.messageId)
@@ -499,7 +504,6 @@
                     ec.logger.info("🧵 [dispatch#AgentTurn] Ingested ${conversationHistory.size()} historical turns for context.")
                 }
 
-                // 6. Invoke OpenAiProxy Runner with Thread History
                 Map proxyParams = [
                     mode                : effectiveMode,
                     userPrompt          : userPrompt,
@@ -517,7 +521,6 @@
                 String agentReply = turnResult?.completionText ?: "Unable to complete assessment."
                 context.completionText = agentReply
 
-                // 7. Persist the Assistant's Response Turn
                 Map recResult = ec.service.sync()
                     .name("org.moqui.ai.discussion.AgiDiscussionServices.record#DiscussionTurn")
                     .parameters([
@@ -532,21 +535,19 @@
 
                 String asstMsgId = recResult.messageId
                 context.assistantMessageId = asstMsgId
+                context.stagedPayloadId = null
 
-                // 8. Phase 4: Formal Plan Persistence to AgiPayload
                 if (effectiveMode == "plan" && asstMsgId) {
                     try {
                         String payloadJson = null
                         String planTitle = "Architecture Plan: " + (disc.name ?: comp)
 
-                        // Attempt to parse out structured JSON contract if wrapped in ESAT or code block
                         if (agentReply.trim().startsWith("{") && agentReply.trim().endsWith("}")) {
                             try {
                                 def parsedJson = new groovy.json.JsonSlurper().parseText(agentReply)
                                 if (parsedJson.astTree || parsedJson.files || parsedJson.plan) {
                                     payloadJson = agentReply.trim()
                                 } else if (parsedJson.message) {
-                                    // Check if message itself contains an inner JSON block
                                     def innerMatcher = parsedJson.message =~ /(?s)```json\s*(\{.*?\})\s*```/
                                     if (innerMatcher.find()) {
                                         payloadJson = innerMatcher.group(1).trim()
@@ -562,18 +563,16 @@
                             }
                         }
 
-                        // Fallback: If model returned pure text markdown, wrap it in a structured JSON plan envelope
                         if (!payloadJson) {
                             payloadJson = groovy.json.JsonOutput.toJson([
-                                mode        : "plan",
-                                planType    : "ARCHITECTURAL_BLUEPRINT",
+                                mode           : "plan",
+                                planType       : "ARCHITECTURAL_BLUEPRINT",
                                 targetComponent: comp,
-                                artifactUri : artUri,
-                                planDetails : agentReply
+                                artifactUri    : artUri,
+                                planDetails    : agentReply
                             ])
                         }
 
-                        // Create the AgiPayload record
                         def newPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
                         newPayload.modeEnumId = "AamPlan"
                         newPayload.statusId = "PlsDraft"
@@ -588,7 +587,8 @@
                         newPayload.setSequencedIdPrimary()
                         newPayload.create()
 
-                        // Link stagedPayloadId back onto the newly created AgiMessage
+                        context.stagedPayloadId = newPayload.agiPayloadId
+
                         def msgVal = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                             .condition("messageId", asstMsgId)
                             .one()
@@ -602,7 +602,6 @@
                         ec.logger.error("Failed to persist plan AgiPayload for message ${asstMsgId}: " + ex.message, ex)
                     }
                 }
-                context.assistantMessageId = recResult.messageId
             ]]></script>
         </actions>
     </service>
@@ -655,4 +654,290 @@
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- SPAWN SUBPLANS FROM DECOMPOSED PLAN PAYLOAD                          -->
+    <!-- ===================================================================== -->
+    <service verb="spawn" noun="SubplansFromDecomposition" type="inline">
+        <description>
+            Takes a decomposed plan payload and instantiates each phase as an
+            individual child AgiMessage and AgiPayload in the discussion tree.
+        </description>
+        <in-parameters>
+            <parameter name="discussionId" required="true"/>
+            <parameter name="parentMessageId" required="true"/>
+            <parameter name="subplans" type="List" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="createdSubplanNodes" type="List"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def createdNodes = []
+
+                // targetComponent resides on the AgiDiscussion container entity
+                def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", discussionId)
+                    .one()
+                String comp = disc?.targetComponent ?: "nursinghome"
+
+                // Fetch parent message to inherit targetArtifactUri if present
+                def parentMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    .condition("messageId", parentMessageId)
+                    .one()
+                String parentArtUri = parentMsg?.targetArtifactUri ?: disc?.targetArtifactUri ?: ""
+
+                subplans.each { sp ->
+                    // Formulate concise label
+                    String rawTitle = sp.title ?: "Subplan"
+                    String subplanTitle = sp.phase ? "${sp.phase}: ${rawTitle}" : rawTitle
+                    String nodeTreeLabel = "📋 " + subplanTitle
+
+                    String subplanBody = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(sp))
+
+                    // Construct rich, readable markdown for the message body
+                    StringBuilder mdBody = new StringBuilder()
+                    mdBody.append("#### ${subplanTitle}\n\n")
+                    if (sp.description) {
+                        mdBody.append("${sp.description.trim()}\n\n")
+                    }
+
+                    if (sp.entities && !sp.entities.isEmpty()) {
+                        mdBody.append("**Target Entities:**\n")
+                        sp.entities.each { mdBody.append("* `${it}`\n") }
+                        mdBody.append("\n")
+                    }
+
+                    if (sp.services && !sp.services.isEmpty()) {
+                        mdBody.append("**Required Services:**\n")
+                        sp.services.each { mdBody.append("* `${it}`\n") }
+                        mdBody.append("\n")
+                    }
+
+                    if (sp.xmlScreens && !sp.xmlScreens.isEmpty()) {
+                        mdBody.append("**Target XML Screens:**\n")
+                        sp.xmlScreens.each { mdBody.append("* `${it}`\n") }
+                        mdBody.append("\n")
+                    }
+
+                    // 1. Create child AgiMessage turn
+                    def newMsg = ec.entity.makeValue("org.moqui.ai.discussion.AgiMessage")
+                    newMsg.discussionId = discussionId
+                    newMsg.parentMessageId = parentMessageId
+                    newMsg.senderRoleEnumId = "AsrUser"
+                    newMsg.partyId = ec.user.userId ?: "User"
+                    newMsg.statusId = "AmsActive"
+                    newMsg.targetArtifactUri = parentArtUri
+                    newMsg.entryDate = ec.user.nowTimestamp
+                    newMsg.setSequencedIdPrimary()
+                    newMsg.create()
+
+                    ec.entity.makeValue("org.moqui.ai.discussion.AgiMessageContent")
+                        .set("messageId", newMsg.messageId)
+                        .set("contentSeqId", "1")
+                        .set("contentTypeEnumId", "mctMarkdown")
+                        .set("title", nodeTreeLabel)
+                        .set("bodyText", mdBody.toString())
+                        .create()
+
+                    // 2. Create corresponding AgiPayload
+                    def newPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                    newPayload.modeEnumId = "AamPlan"
+                    newPayload.statusId = "PlsDraft"
+                    newPayload.targetComponent = comp
+                    newPayload.artifactUri = parentArtUri
+                    newPayload.discussionId = discussionId
+                    newPayload.messageId = newMsg.messageId
+                    newPayload.title = subplanTitle
+                    newPayload.userPromptText = sp.description ?: subplanTitle
+                    newPayload.payloadJsonData = subplanBody
+                    newPayload.createdDate = ec.user.nowTimestamp
+                    newPayload.setSequencedIdPrimary()
+                    newPayload.create()
+
+                    // Link stagedPayloadId back to child AgiMessage
+                    newMsg.stagedPayloadId = newPayload.agiPayloadId
+                    newMsg.update()
+
+                    createdNodes.add([
+                        nodeKey         : "msg_" + newMsg.messageId,
+                        id              : newMsg.messageId,
+                        messageId       : newMsg.messageId,
+                        discussionId    : discussionId,
+                        parentMessageId : parentMessageId,
+                        label           : nodeTreeLabel,
+                        senderRoleEnumId: "AsrUser",
+                        mode            : "plan",
+                        stagedPayloadId : newPayload.agiPayloadId,
+                        statusId        : "AmsActive",
+                        entryDate       : newMsg.entryDate?.toString(),
+                        children        : []
+                    ])
+                }
+
+                // Increment discussion container message count
+                if (disc) {
+                    disc.messageCount = (disc.messageCount ?: 0) + subplans.size()
+                    disc.lastActivityDate = ec.user.nowTimestamp
+                    disc.update()
+                }
+
+                context.createdSubplanNodes = createdNodes
+            ]]></script>
+        </actions>
+    </service>
+
+<!-- ===================================================================== -->
+    <!-- ARCHIVE DISCUSSION SUBBRANCH (CASCADE SOFT-DELETE)                    -->
+    <!-- ===================================================================== -->
+    <service verb="archive" noun="DiscussionBranch" type="inline">
+        <description>
+            Recursively archives an AgiMessage turn or AgiDiscussion container and 
+            all its descendants by setting statusId to AmsArchived / AgdStatusArchived.
+        </description>
+        <in-parameters>
+            <parameter name="messageId"/>
+            <parameter name="discussionId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="archivedCount" type="Integer"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                int count = 0
+
+                def archiveMessageRecursive
+                archiveMessageRecursive = { String targetMsgId ->
+                    def msg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                        .condition("messageId", targetMsgId)
+                        .one()
+                    if (msg && msg.statusId != "AmsArchived") {
+                        msg.statusId = "AmsArchived"
+                        msg.update()
+                        count++
+
+                        if (msg.stagedPayloadId) {
+                            def payload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                .condition("agiPayloadId", msg.stagedPayloadId)
+                                .one()
+                            if (payload && payload.statusId == "PlsDraft") {
+                                payload.statusId = "PlsArchived"
+                                payload.update()
+                            }
+                        }
+
+                        def children = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("parentMessageId", targetMsgId)
+                            .list()
+                        children.each { child ->
+                            archiveMessageRecursive(child.messageId as String)
+                        }
+                    }
+                }
+
+                if (messageId) {
+                    archiveMessageRecursive(messageId as String)
+                } else if (discussionId) {
+                    def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                        .condition("discussionId", discussionId)
+                        .one()
+                    if (disc) {
+                        disc.statusId = "AgdStatusArchived"
+                        disc.update()
+                        count++
+
+                        def rootMessages = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("discussionId", discussionId)
+                            .condition("parentMessageId", null)
+                            .list()
+                        rootMessages.each { rMsg ->
+                            archiveMessageRecursive(rMsg.messageId as String)
+                        }
+                    }
+                }
+
+                context.archivedCount = count
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- RESTORE DISCUSSION SUBBRANCH (CASCADE UNARCHIVE)                      -->
+    <!-- ===================================================================== -->
+    <service verb="restore" noun="DiscussionBranch" type="inline">
+        <description>
+            Restores an archived turn and its ancestry/descendants back to AmsActive.
+        </description>
+        <in-parameters>
+            <parameter name="messageId"/>
+            <parameter name="discussionId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="restoredCount" type="Integer"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                int count = 0
+
+                def restoreMessageRecursive
+                restoreMessageRecursive = { String targetMsgId ->
+                    def msg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                        .condition("messageId", targetMsgId)
+                        .one()
+                    if (msg && msg.statusId == "AmsArchived") {
+                        msg.statusId = "AmsActive"
+                        msg.update()
+                        count++
+
+                        if (msg.stagedPayloadId) {
+                            def payload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                .condition("agiPayloadId", msg.stagedPayloadId)
+                                .one()
+                            if (payload && payload.statusId == "PlsArchived") {
+                                payload.statusId = "PlsDraft"
+                                payload.update()
+                            }
+                        }
+
+                        def children = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("parentMessageId", targetMsgId)
+                            .list()
+                        children.each { child ->
+                            restoreMessageRecursive(child.messageId as String)
+                        }
+                    }
+                }
+
+                if (messageId) {
+                    restoreMessageRecursive(messageId as String)
+
+                    // Ensure ancestors are active so node isn't orphaned
+                    def currentMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                        .condition("messageId", messageId)
+                        .one()
+                    while (currentMsg?.parentMessageId) {
+                        def parent = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("messageId", currentMsg.parentMessageId)
+                            .one()
+                        if (parent && parent.statusId == "AmsArchived") {
+                            parent.statusId = "AmsActive"
+                            parent.update()
+                            count++
+                        }
+                        currentMsg = parent
+                    }
+                } else if (discussionId) {
+                    def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                        .condition("discussionId", discussionId)
+                        .one()
+                    if (disc) {
+                        disc.statusId = "AgdStatusActive"
+                        disc.update()
+                        count++
+                    }
+                }
+
+                context.restoredCount = count
+            ]]></script>
+        </actions>
+    </service>
 </services>

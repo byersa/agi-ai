@@ -38,7 +38,7 @@
         mounted() {
             if (!window.showdown && this.allowMarkdown) {
                 const s = document.createElement('script');
-                s.src = '/js/showdown.min.js';
+                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js';
                 s.onload = () => { this.$forceUpdate(); };
                 document.head.appendChild(s);
             }

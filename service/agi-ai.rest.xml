@@ -87,5 +87,20 @@
                     <service name="org.moqui.ai.discussion.AgiDiscussionServices.promote#DiscussionToWorkEffort"/>
                 </method>
             </resource>
+            <resource name="spawn-subplans">
+                <method type="post">
+                    <service name="org.moqui.ai.discussion.AgiDiscussionServices.spawn#SubplansFromDecomposition"/>
+                </method>
+            </resource>
+            <resource name="archive-branch">
+                <method type="post">
+                    <service name="org.moqui.ai.discussion.AgiDiscussionServices.archive#DiscussionBranch"/>
+                </method>
+            </resource>
+            <resource name="restore-branch">
+                <method type="post">
+                    <service name="org.moqui.ai.discussion.AgiDiscussionServices.restore#DiscussionBranch"/>
+                </method>
+            </resource>
         </resource>
 </resource>
