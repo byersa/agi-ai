@@ -2,7 +2,7 @@
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
 
-<!-- ===================================================================== -->
+    <!-- ===================================================================== -->
     <!-- GET DISCUSSION GRAPH TREE                                             -->
     <!-- ===================================================================== -->
     <service verb="get" noun="DiscussionTree" type="inline">
@@ -49,6 +49,20 @@
                         def titledContent = contents?.find { (it.title as boolean) }
                         String displayTitle = titledContent?.title ?: (contents ? (contents[0].bodyText?.take(45) + "...") : "Topic #" + mId)
 
+                        // Check if this turn or an assistant response attached to it has a stagedPayloadId
+                        String activePayloadId = msg.stagedPayloadId
+                        if (!activePayloadId) {
+                            def asstWithPayload = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                                .condition("parentMessageId", mId)
+                                .condition("senderRoleEnumId", "AsrAssistant")
+                                .condition("stagedPayloadId", "not-equals", null)
+                                .one()
+                            activePayloadId = asstWithPayload?.stagedPayloadId
+                        }
+
+                        String lowerTitle = displayTitle.toLowerCase()
+                        boolean isPlanTurn = !!activePayloadId || lowerTitle.contains("plan:") || lowerTitle.contains("subplan")
+
                         return [
                             nodeKey              : "msg_" + mId,
                             id                   : mId,
@@ -59,8 +73,8 @@
                             senderRoleEnumId     : msg.senderRoleEnumId,
                             statusId             : msg.statusId,
                             isArchived           : (msg.statusId == "AmsArchived"),
-                            stagedPayloadId      : msg.stagedPayloadId,
-                            mode                 : (msg.stagedPayloadId ? "plan" : "discuss"),
+                            stagedPayloadId      : activePayloadId,
+                            mode                 : (isPlanTurn ? "plan" : "discuss"),
                             children             : buildMessageTree(discId, mId)
                         ]
                     }
@@ -589,12 +603,24 @@
 
                         context.stagedPayloadId = newPayload.agiPayloadId
 
+                        // Link stagedPayloadId to assistant message
                         def msgVal = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                             .condition("messageId", asstMsgId)
                             .one()
                         if (msgVal) {
                             msgVal.stagedPayloadId = newPayload.agiPayloadId
                             msgVal.update()
+                        }
+
+                        // Also link stagedPayloadId to parent user prompt message
+                        if (parentMessageId) {
+                            def parentUserMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                                .condition("messageId", parentMessageId)
+                                .one()
+                            if (parentUserMsg && !parentUserMsg.stagedPayloadId) {
+                                parentUserMsg.stagedPayloadId = newPayload.agiPayloadId
+                                parentUserMsg.update()
+                            }
                         }
 
                         ec.logger.info("📦 [dispatch#AgentTurn] Created AgiPayload #${newPayload.agiPayloadId} linked to AgiMessage #${asstMsgId}")
@@ -669,10 +695,31 @@
         </in-parameters>
         <out-parameters>
             <parameter name="createdSubplanNodes" type="List"/>
+            <parameter name="batchRunId"/>
         </out-parameters>
         <actions>
             <script><![CDATA[
+                // 1. Idempotency Guard: Check if active subplan children already exist under parentMessageId
+                def existingChildren = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    .condition("discussionId", discussionId)
+                    .condition("parentMessageId", parentMessageId)
+                    .condition("statusId", "not-equals", "AmsArchived")
+                    .condition("senderRoleEnumId", "not-equals", "AsrAssistant")
+                    .list()
+
+                if (existingChildren && !existingChildren.isEmpty()) {
+                    // Check if any existing child is already a subplan
+                    boolean hasSubplans = existingChildren.any { child ->
+                        child.stagedPayloadId != null
+                    }
+                    if (hasSubplans) {
+                        ec.message.addError("Subplans are already instantiated under turn #${parentMessageId}. Archive the existing subplan branch before re-instantiating.")
+                        return
+                    }
+                }
+
                 def createdNodes = []
+                String batchRunId = java.util.UUID.randomUUID().toString()
 
                 // targetComponent resides on the AgiDiscussion container entity
                 def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
@@ -687,14 +734,12 @@
                 String parentArtUri = parentMsg?.targetArtifactUri ?: disc?.targetArtifactUri ?: ""
 
                 subplans.each { sp ->
-                    // Formulate concise label
                     String rawTitle = sp.title ?: "Subplan"
-                    String subplanTitle = sp.phase ? "${sp.phase}: ${rawTitle}" : rawTitle
+                    String subplanTitle = sp.phase ? "${sp.phase}:${rawTitle}" : rawTitle
                     String nodeTreeLabel = "📋 " + subplanTitle
 
                     String subplanBody = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(sp))
 
-                    // Construct rich, readable markdown for the message body
                     StringBuilder mdBody = new StringBuilder()
                     mdBody.append("#### ${subplanTitle}\n\n")
                     if (sp.description) {
@@ -737,6 +782,16 @@
                         .set("contentTypeEnumId", "mctMarkdown")
                         .set("title", nodeTreeLabel)
                         .set("bodyText", mdBody.toString())
+                        .create()
+
+                    // Record batch facet on message
+                    ec.entity.makeValue("org.moqui.ai.discussion.AgiMessageFacet")
+                        .set("messageId", newMsg.messageId)
+                        .set("facetKey", "batchRunId")
+                        .set("facetValue", batchRunId)
+                        .set("facetTypeEnumId", "AftDirective")
+                        .set("isInheritable", "N")
+                        .setSequencedIdPrimary()
                         .create()
 
                     // 2. Create corresponding AgiPayload
@@ -782,11 +837,12 @@
                 }
 
                 context.createdSubplanNodes = createdNodes
+                context.batchRunId = batchRunId
             ]]></script>
         </actions>
     </service>
 
-<!-- ===================================================================== -->
+    <!-- ===================================================================== -->
     <!-- ARCHIVE DISCUSSION SUBBRANCH (CASCADE SOFT-DELETE)                    -->
     <!-- ===================================================================== -->
     <service verb="archive" noun="DiscussionBranch" type="inline">
@@ -861,6 +917,47 @@
     </service>
 
     <!-- ===================================================================== -->
+    <!-- ROLLBACK DISCUSSION BATCH (UNDO INSTANTIATION)                       -->
+    <!-- ===================================================================== -->
+    <service verb="rollback" noun="DiscussionBatch" type="inline">
+        <description>
+            Soft-archives a specific list of spawned messages by messageIds or batchRunId.
+        </description>
+        <in-parameters>
+            <parameter name="messageIds" type="List" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="rolledBackCount" type="Integer"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                int count = 0
+                messageIds.each { mId ->
+                    def msg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                        .condition("messageId", mId)
+                        .one()
+                    if (msg && msg.statusId != "AmsArchived") {
+                        msg.statusId = "AmsArchived"
+                        msg.update()
+                        count++
+
+                        if (msg.stagedPayloadId) {
+                            def payload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                .condition("agiPayloadId", msg.stagedPayloadId)
+                                .one()
+                            if (payload && payload.statusId == "PlsDraft") {
+                                payload.statusId = "PlsArchived"
+                                payload.update()
+                            }
+                        }
+                    }
+                }
+                context.rolledBackCount = count
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
     <!-- RESTORE DISCUSSION SUBBRANCH (CASCADE UNARCHIVE)                      -->
     <!-- ===================================================================== -->
     <service verb="restore" noun="DiscussionBranch" type="inline">
@@ -910,7 +1007,6 @@
                 if (messageId) {
                     restoreMessageRecursive(messageId as String)
 
-                    // Ensure ancestors are active so node isn't orphaned
                     def currentMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                         .condition("messageId", messageId)
                         .one()
@@ -940,4 +1036,5 @@
             ]]></script>
         </actions>
     </service>
+
 </services>

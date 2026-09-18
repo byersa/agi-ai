@@ -102,5 +102,10 @@
                     <service name="org.moqui.ai.discussion.AgiDiscussionServices.restore#DiscussionBranch"/>
                 </method>
             </resource>
+            <resource name="rollback-batch">
+                <method type="post">
+                    <service name="org.moqui.ai.discussion.AgiDiscussionServices.rollback#DiscussionBatch"/>
+                </method>
+            </resource>
         </resource>
 </resource>
