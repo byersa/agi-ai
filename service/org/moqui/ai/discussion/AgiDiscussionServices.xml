@@ -85,8 +85,12 @@
                 if (discussionId) {
                     discFind.condition("discussionId", discussionId)
                 } else {
-                    if (targetComponent) discFind.condition("targetComponent", targetComponent)
-                    if (targetArtifactUri) discFind.condition("targetArtifactUri", targetArtifactUri)
+                    if (targetComponent) {
+                        discFind.condition("targetComponent", "in", [targetComponent, null, ""])
+                    }
+                    if (targetArtifactUri) {
+                        discFind.condition("targetArtifactUri", targetArtifactUri)
+                    }
                 }
 
                 if (!showArchived) {
@@ -94,6 +98,13 @@
                 }
 
                 def discussions = discFind.orderBy("discussionId").list()
+
+                // Fallback: If component-scoped query yields nothing, return all active root discussions
+                if (!discussions && !discussionId) {
+                    def fallbackFind = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    if (!showArchived) fallbackFind.condition("statusId", "not-equals", "AgdStatusArchived")
+                    discussions = fallbackFind.orderBy("discussionId").list()
+                }
 
                 context.treeNodes = discussions.collect { disc ->
                     String dId = disc.discussionId as String
@@ -733,9 +744,10 @@
                     .one()
                 String parentArtUri = parentMsg?.targetArtifactUri ?: disc?.targetArtifactUri ?: ""
 
-                subplans.each { sp ->
-                    String rawTitle = sp.title ?: "Subplan"
-                    String subplanTitle = sp.phase ? "${sp.phase}:${rawTitle}" : rawTitle
+                subplans.eachWithIndex { sp, idx ->
+                    String rawTitle = sp.title ?: sp.name ?: sp.phaseName ?: sp.summary ?: "Phase ${idx + 1} Scope"
+                    String phaseLabel = sp.phase ? (sp.phase.toString().toLowerCase().startsWith("phase") ? "${sp.phase}" : "Phase ${sp.phase}") : ""
+                    String subplanTitle = phaseLabel ? "${phaseLabel}: ${rawTitle}" : rawTitle
                     String nodeTreeLabel = "📋 " + subplanTitle
 
                     String subplanBody = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(sp))

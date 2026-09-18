@@ -290,22 +290,30 @@
                 if (['interview', 'elicitation', 'conversation'].contains(normalizedMode)) normalizedMode = 'discuss'
                 String safeUri = artifactUri ?: ""
 
-                def loadResource = { String loc ->
-                    if (!loc) return null
-                    try {
-                        ResourceReference rr = ec.resource.getLocationReference(loc)
-                        if (rr != null && rr.getExists()) return rr.getText()
-                    } catch (Exception e) {
-                        ec.logger.warn("⚠️ [assemble#SystemInstruction] Could not read ${loc}: ${e.message}")
+                // Cascade lookup across components: check agi-ide first, fallback to agi-ai
+                def loadFirstResource = { List<String> paths ->
+                    for (String path in paths) {
+                        try {
+                            ResourceReference rr = ec.resource.getLocationReference(path)
+                            if (rr != null && rr.getExists()) return rr.getText()
+                        } catch (Exception e) {
+                            ec.logger.warn("⚠️ [assemble#SystemInstruction] Error reading ${path}:${e.message}")
+                        }
                     }
                     return null
                 }
 
                 // 1. BASE FOUNDATIONS & GUARDRAILS
-                String foundation = loadResource("component://agi-ai/mcp/instructions/base/system-foundation.md")
+                String foundation = loadFirstResource([
+                    "component://agi-ide/mcp/instructions/base/system-foundation.md",
+                    "component://agi-ai/mcp/instructions/base/system-foundation.md"
+                ])
                 if (foundation) prompt.append(foundation.trim()).append("\n\n")
 
-                String guardrails = loadResource("component://agi-ai/mcp/instructions/base/guardrails.md")
+                String guardrails = loadFirstResource([
+                    "component://agi-ide/mcp/instructions/base/guardrails.md",
+                    "component://agi-ai/mcp/instructions/base/guardrails.md"
+                ])
                 if (guardrails) prompt.append(guardrails.trim()).append("\n\n")
 
                 // 2. ARTIFACT IDENTIFICATION
@@ -324,12 +332,17 @@
                 // 3. MODE & ARTIFACT DIRECTIVE
                 String modeDirective = null
                 if (['discuss', 'orchestrate'].contains(normalizedMode)) {
-                    modeDirective = loadResource("component://agi-ai/mcp/instructions/artifacts/generic/${normalizedMode}.md")
+                    modeDirective = loadFirstResource([
+                        "component://agi-ide/mcp/instructions/artifacts/generic/${normalizedMode}.md",
+                        "component://agi-ai/mcp/instructions/artifacts/generic/${normalizedMode}.md"
+                    ])
                 } else {
-                    modeDirective = loadResource("component://agi-ai/mcp/instructions/artifacts/${matchedCategory}/${normalizedMode}.md")
-                    if (!modeDirective) {
-                        modeDirective = loadResource("component://agi-ai/mcp/instructions/artifacts/generic/${normalizedMode}.md")
-                    }
+                    modeDirective = loadFirstResource([
+                        "component://agi-ide/mcp/instructions/artifacts/${matchedCategory}/${normalizedMode}.md",
+                        "component://agi-ai/mcp/instructions/artifacts/${matchedCategory}/${normalizedMode}.md",
+                        "component://agi-ide/mcp/instructions/artifacts/generic/${normalizedMode}.md",
+                        "component://agi-ai/mcp/instructions/artifacts/generic/${normalizedMode}.md"
+                    ])
                 }
 
                 if (modeDirective) {
@@ -355,9 +368,15 @@
                 facetMap.each { fKey, fVal ->
                     if (fVal == true || fVal == "true") {
                         String cleanKey = fKey.toString().toLowerCase().replace("-", "").replace("_", "")
-                        String facetText = loadResource("component://agi-ai/mcp/instructions/facets/${cleanKey}.md")
+                        String facetText = loadFirstResource([
+                            "component://agi-ide/mcp/instructions/facets/${cleanKey}.md",
+                            "component://agi-ai/mcp/instructions/facets/${cleanKey}.md"
+                        ])
                         if (!facetText && cleanKey == "multitenant") {
-                            facetText = loadResource("component://agi-ai/mcp/instructions/facets/multi-tenant.md")
+                            facetText = loadFirstResource([
+                                "component://agi-ide/mcp/instructions/facets/multi-tenant.md",
+                                "component://agi-ai/mcp/instructions/facets/multi-tenant.md"
+                            ])
                         }
                         if (facetText) {
                             prompt.append("<!-- ============================================================= -->\n")
