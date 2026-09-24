@@ -6,80 +6,59 @@
     <!-- LIST ACTIVE MCP TOOLS (Pure Moqui / JSON Schema - Strict Contract)    -->
     <!-- ===================================================================== -->
     <service verb="list" noun="Tools" authenticate="anonymous-all">
-        <description>Queries live dynamic MCP services and serves formatted JSON schemas for Gemini tool calling.</description>
+        <description>Queries live dynamic MCP services and serves formatted JSON schemas for LlmTool and Gemini tool calling.</description>
         <out-parameters>
-            <parameter name="tools" type="List"><description>List of formatted tool definitions for MCP compliance</description></parameter>
+            <parameter name="tools" type="List"><description>List of formatted tool definitions for MCP and LlmTool compliance</description></parameter>
         </out-parameters>
         <actions>
             <script><![CDATA[
+                import org.moqui.impl.util.RestSchemaUtil
+
                 Map toolMap = [:]
 
                 // 1. DIRECT SERVICE INSPECTION FOR org.moqui.ai.mcp.* SERVICES
                 def serviceFacade = ec.factory.serviceFacade
                 def knownServices = serviceFacade.getKnownServiceNames()
                 
-                for (String serviceName in knownServices) {
-                    if (serviceName.startsWith("org.moqui.ai.mcp.")) {
-                        def sd = serviceFacade.getServiceDefinition(serviceName)
+                for (String sName in knownServices) {
+                    if (sName.startsWith("org.moqui.ai.mcp.")) {
+                        def sd = serviceFacade.getServiceDefinition(sName)
                         if (sd != null) {
-                            def parts = serviceName.split("\\.")
+                            def parts = sName.split("\\.")
                             def rawName = parts[parts.length - 1].replace("#", "_")
                             def cleanMethodName = rawName.replaceAll("([a-z])([A-Z])", '$1_$2').toLowerCase()
                             
-                            def description = sd.serviceNode.attribute("description") ?: sd.serviceNode.first("description")?.getText() ?: "MCP tool for ${serviceName}"
-                            
-                            Map propertiesMap = [:]
-                            List requiredList = []
+                            def description = sd.serviceNode.attribute("description") ?: sd.serviceNode.first("description")?.getText() ?: "MCP tool for ${sName}"
 
-                            sd.inParameterNameList.each { paramName ->
-                                def paramInfo = sd.inParameterInfoMap.get(paramName)
-                                if (paramInfo != null) {
-                                    def paramNode = paramInfo.parameterNode
-                                    boolean isInternal = paramNode.attribute("internal") == "true" || paramNode.attribute("scope") == "context"
-                                    
-                                    if (!isInternal) {
-                                        def rawDesc = paramNode.attribute("description") ?: paramNode.first("description")?.getText() ?: paramName
-                                        def paramType = "string"
-                                        
-                                        if (paramInfo.parmClass != null) {
-                                            String sName = paramInfo.parmClass.simpleName.toLowerCase()
-                                            if (sName.contains("int") || sName.contains("long")) paramType = "integer"
-                                            else if (sName.contains("bool")) paramType = "boolean"
-                                            else if (sName.contains("list") || sName.contains("set")) paramType = "array"
-                                            else if (sName.contains("map")) paramType = "object"
-                                        }
+                            // Derive read-only capability from service verb/noun
+                            String verb = sd.verb?.toLowerCase() ?: ""
+                            String noun = sd.noun?.toLowerCase() ?: ""
+                            boolean isReadOnly = verb.startsWith("get") || verb.startsWith("find") || verb.startsWith("search") ||
+                                                 verb.startsWith("list") || verb.startsWith("validate") || noun.contains("search") ||
+                                                 noun.contains("list") || noun.contains("archetype")
 
-                                        // 🎯 ENFORCE STRICT CANONICAL FORMAT GUIDANCE
-                                        String enhancedDesc = rawDesc
-                                        if (paramName.equalsIgnoreCase("artifactUri") || paramName.equalsIgnoreCase("targetScreenUri")) {
-                                            enhancedDesc += " (Required format: 'component://<componentName>/screen/<path>.xml')"
-                                        }
+                            // Use framework standard RestSchemaUtil (matches ServiceCallTool)
+                            Map schema = RestSchemaUtil.getJsonSchemaMapIn(sd) ?: [type: "object", properties: [:]]
 
-                                        propertiesMap[paramName] = [
-                                            type: paramType,
-                                            description: enhancedDesc
-                                        ]
-
-                                        // Ensure required attributes are strictly captured
-                                        if (paramNode.attribute("required") == "true") {
-                                            requiredList.add(paramName)
-                                        }
+                            // Enhance schema parameter descriptions with canonical formatting hints
+                            if (schema.properties instanceof Map) {
+                                schema.properties.each { pName, pDef ->
+                                    if (pDef instanceof Map && (pName.equalsIgnoreCase("artifactUri") || pName.equalsIgnoreCase("targetScreenUri"))) {
+                                        pDef.description = (pDef.description ?: pName) + " (Required format: 'component://<componentName>/screen/<path>.xml')"
                                     }
                                 }
                             }
 
-                            // Build rigid, explicit JSON schema definition
                             toolMap[cleanMethodName] = [
-                                name: cleanMethodName,
-                                command: "/" + cleanMethodName.replace("_", "-"),
-                                serviceName: serviceName,
-                                title: cleanMethodName.replace("_", " ").capitalize(),
-                                description: description.trim() + " NOTE: Pass exact parameter names matching the schema. Execute once per atomic item.",
-                                inputSchema: [
-                                    type: "object",
-                                    properties: propertiesMap,
-                                    required: requiredList
-                                ]
+                                name           : cleanMethodName,
+                                command        : "/" + cleanMethodName.replace("_", "-"),
+                                serviceName    : sName,
+                                serviceCallName: sName, // Standardized key consumed by executeOpenAiProxyLoop
+                                readOnly       : isReadOnly,
+                                isReadOnly     : isReadOnly,
+                                title          : cleanMethodName.replace("_", " ").capitalize(),
+                                description    : description.trim() + " NOTE: Pass exact parameter names matching the schema.",
+                                inputSchema    : schema
                             ]
                         }
                     }
@@ -93,14 +72,18 @@
                     mcpToolsList.each { mcpTool ->
                         String tName = mcpTool.name
                         if (tName && !toolMap.containsKey(tName)) {
+                            boolean isReadOnly = mcpTool.readOnly == true || mcpTool.isReadOnly == true
                             toolMap[tName] = [
-                                name: tName,
-                                command: "/" + tName.replace("_", "-"),
-                                serviceName: "McpServices.mcp#ToolsCall",
-                                isMcpWrapper: true,
-                                title: tName.replace("_", " ").capitalize(),
-                                description: mcpTool.description ?: "moqui-mcp tool",
-                                inputSchema: mcpTool.inputSchema ?: [type: "object", properties: [:]]
+                                name           : tName,
+                                command        : "/" + tName.replace("_", "-"),
+                                serviceName    : "McpServices.mcp#ToolsCall",
+                                serviceCallName: "McpServices.mcp#ToolsCall",
+                                readOnly       : isReadOnly,
+                                isReadOnly     : isReadOnly,
+                                isMcpWrapper   : true,
+                                title          : tName.replace("_", " ").capitalize(),
+                                description    : mcpTool.description ?: "moqui-mcp tool",
+                                inputSchema    : mcpTool.inputSchema ?: [type: "object", properties: [:]]
                             ]
                         }
                     }
@@ -146,34 +129,6 @@
                 context.putAll(result)
             ]]></script>
         </actions>
-    </service>
-
-    <service verb="run" noun="OpenAiProxy" type="script"
-             location="component://agi-ai/script/executeOpenAiProxyLoop.groovy">
-        <description>
-            Executes multi-turn agent tool execution loop against OpenAI-compatible REST endpoints.
-        </description>
-        <in-parameters>
-            <parameter name="mode" default-value="build"/>
-            <parameter name="userPrompt" required="true" allow-html="any" />
-            <parameter name="targetComponent" default-value="nursinghome"/>
-            <parameter name="focusCoordinate"/>
-            <parameter name="activeArtifactLocation"/>
-            <parameter name="targetMariaId"/>
-            <parameter name="activeRagContext" allow-html="any" />
-            <parameter name="facets" type="Map"/>
-            <parameter name="availableToolSchemas" type="List"/>
-            <!-- Optional overrides for dynamic provider selection -->
-            <parameter name="aiEndpointUrl"/>
-            <parameter name="aiApiKey"/>
-            <parameter name="aiModelName"/>
-        </in-parameters>
-        <out-parameters>
-            <parameter name="completionText" type="String"/>
-            <parameter name="status" type="String"/>
-            <parameter name="createdArtifactUri" type="String"/>
-            <parameter name="rawXmlContent" type="String"/>
-        </out-parameters>
     </service>
 
 </services>

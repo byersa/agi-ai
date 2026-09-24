@@ -8,7 +8,7 @@
     <service verb="run" noun="OpenAiProxy" type="script"
              location="component://agi-ai/script/executeOpenAiProxyLoop.groovy">
         <description>
-            Executes multi-turn agent tool execution loop against OpenAI-compatible REST endpoints.
+            Executes multi-turn agent tool execution loop against OpenAI-compatible REST endpoints or ec.llm.
         </description>
         <in-parameters>
             <parameter name="mode" default-value="build"/>
@@ -20,10 +20,12 @@
             <parameter name="activeRagContext" allow-html="any"/>
             <parameter name="facets" type="Map"/>
             <parameter name="availableToolSchemas" type="List"/>
+            <parameter name="conversationHistory" type="List"/>
+            <!-- Dynamic provider selection -->
+            <parameter name="aiProfileName"/>
             <parameter name="aiEndpointUrl"/>
             <parameter name="aiApiKey"/>
             <parameter name="aiModelName"/>
-            <parameter name="conversationHistory" type="List"/>
         </in-parameters>
         <out-parameters>
             <parameter name="completionText" type="String"/>

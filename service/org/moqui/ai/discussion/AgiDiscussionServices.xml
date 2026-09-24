@@ -131,7 +131,7 @@
                                 nodeKey              : "disc_" + cd.discussionId,
                                 id                   : cd.discussionId,
                                 discussionId         : cd.discussionId,
-                                label                : "🔗 " + cd.name,
+                                label                : "💬 " + cd.name,
                                 shortName            : cd.shortName,
                                 statusId             : cd.statusId,
                                 isArchived           : (cd.statusId == "AgdStatusArchived"),
@@ -368,6 +368,8 @@
             <parameter name="parentMessageId"/>
             <parameter name="instructionName"/>
             <parameter name="mode" default-value="discuss"/>
+            <!-- Dynamic Profile Override Parameter -->
+            <parameter name="aiProfileName"/>
         </in-parameters>
         <out-parameters>
             <parameter name="assistantMessageId"/>
@@ -392,6 +394,31 @@
                     .list()
                 Map mergedFacets = [:]
                 dFacets.each { mergedFacets[it.facetKey] = it.facetValue }
+
+                // -------------------------------------------------------------------------
+                // DYNAMIC AI PROFILE RESOLUTION
+                // Cascade: Explicit Param -> Container Facet -> Component Default -> ec.llm Default
+                // -------------------------------------------------------------------------
+                String resolvedProfile = aiProfileName
+                if (!resolvedProfile && mergedFacets) {
+                    resolvedProfile = mergedFacets.aiProfile ?: mergedFacets.modelProfile ?: mergedFacets.profile
+                }
+                if (!resolvedProfile) {
+                    resolvedProfile = ec.user.getPreference("${comp}.ai.profile") ?:
+                                      System.getProperty("${comp}.ai.profile") ?:
+                                      System.getProperty("agi.ai.default.profile")
+                }
+                if (!resolvedProfile) {
+                    try {
+                        def facade = ec.llm
+                        if (facade != null && facade.getProfileNames()?.size() > 0) {
+                            resolvedProfile = facade.getDefault()?.getProfileName() ?: "gemini"
+                        }
+                    } catch (Exception ignore) {
+                        resolvedProfile = "gemini"
+                    }
+                }
+                ec.logger.info("🎯 [dispatch#AgentTurn] Resolved dynamic aiProfileName: '${resolvedProfile}' for discussion #${discussionId}")
 
                 def loadFirstExisting = { List<String> paths ->
                     for (String path : paths) {
@@ -535,7 +562,8 @@
                     conversationHistory : conversationHistory,
                     targetComponent     : comp,
                     artifactUri         : artUri,
-                    facets              : mergedFacets
+                    facets              : mergedFacets,
+                    aiProfileName       : resolvedProfile
                 ]
 
                 Map turnResult = ec.service.sync()
@@ -719,7 +747,6 @@
                     .list()
 
                 if (existingChildren && !existingChildren.isEmpty()) {
-                    // Check if any existing child is already a subplan
                     boolean hasSubplans = existingChildren.any { child ->
                         child.stagedPayloadId != null
                     }
@@ -732,13 +759,11 @@
                 def createdNodes = []
                 String batchRunId = java.util.UUID.randomUUID().toString()
 
-                // targetComponent resides on the AgiDiscussion container entity
                 def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
                     .condition("discussionId", discussionId)
                     .one()
                 String comp = disc?.targetComponent ?: "nursinghome"
 
-                // Fetch parent message to inherit targetArtifactUri if present
                 def parentMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                     .condition("messageId", parentMessageId)
                     .one()
@@ -747,8 +772,8 @@
                 subplans.eachWithIndex { sp, idx ->
                     String rawTitle = sp.title ?: sp.name ?: sp.phaseName ?: sp.summary ?: "Phase ${idx + 1} Scope"
                     String phaseLabel = sp.phase ? (sp.phase.toString().toLowerCase().startsWith("phase") ? "${sp.phase}" : "Phase ${sp.phase}") : ""
-                    String subplanTitle = phaseLabel ? "${phaseLabel}: ${rawTitle}" : rawTitle
-                    String nodeTreeLabel = "📋 " + subplanTitle
+                    String subplanTitle = phaseLabel ? "${phaseLabel}:${rawTitle}" : rawTitle
+                    String nodeTreeLabel = "📑 " + subplanTitle
 
                     String subplanBody = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(sp))
 
@@ -776,7 +801,6 @@
                         mdBody.append("\n")
                     }
 
-                    // 1. Create child AgiMessage turn
                     def newMsg = ec.entity.makeValue("org.moqui.ai.discussion.AgiMessage")
                     newMsg.discussionId = discussionId
                     newMsg.parentMessageId = parentMessageId
@@ -796,7 +820,6 @@
                         .set("bodyText", mdBody.toString())
                         .create()
 
-                    // Record batch facet on message
                     ec.entity.makeValue("org.moqui.ai.discussion.AgiMessageFacet")
                         .set("messageId", newMsg.messageId)
                         .set("facetKey", "batchRunId")
@@ -806,7 +829,6 @@
                         .setSequencedIdPrimary()
                         .create()
 
-                    // 2. Create corresponding AgiPayload
                     def newPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
                     newPayload.modeEnumId = "AamPlan"
                     newPayload.statusId = "PlsDraft"
@@ -821,7 +843,6 @@
                     newPayload.setSequencedIdPrimary()
                     newPayload.create()
 
-                    // Link stagedPayloadId back to child AgiMessage
                     newMsg.stagedPayloadId = newPayload.agiPayloadId
                     newMsg.update()
 
@@ -841,7 +862,6 @@
                     ])
                 }
 
-                // Increment discussion container message count
                 if (disc) {
                     disc.messageCount = (disc.messageCount ?: 0) + subplans.size()
                     disc.lastActivityDate = ec.user.nowTimestamp
