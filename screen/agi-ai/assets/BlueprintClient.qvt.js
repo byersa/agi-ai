@@ -4,6 +4,7 @@
 (function () {
     // 1. Initialize the global dictionary container if it doesn't exist
     window.AgiComponents = window.AgiComponents || {};
+
     window.AgiComponents['BlueprintRenderer'] = {
         name: 'BlueprintRenderer',
         props: ['blueprint'],
@@ -205,18 +206,11 @@
                     return;
                 }
 
-                console.log("🎯 [CLICK DETECTED ON NODE]:", {
-                    tag: node._moquiTag || node.name,
-                    mariaId: mId,
-                    nodeAttributes: node.attributes
-                });
-
                 const payload = {
                     event: 'element-selected-by-id',
                     mariaId: mId
                 };
 
-                // Broadcast on Channel and dispatch Window event
                 try {
                     if (!window.__agiContextBus) {
                         window.__agiContextBus = new BroadcastChannel('agi-ide-context-bus');
@@ -230,21 +224,18 @@
         render() {
             if (!this.node) return null;
 
-            // Raw primitive values
             if (typeof this.node === 'string' || typeof this.node === 'number') {
                 return this.node;
             }
 
             let activeNode = Array.isArray(this.node) ? (this.node[0] || {}) : this.node;
 
-            // 1. Tag & Attribute Normalization
             const rawTag = (activeNode._moquiTag || activeNode['@type'] || activeNode.name || activeNode.tag || 'container').toString();
             const tag = rawTag.startsWith('@') ? rawTag.slice(1) : rawTag;
             const explicitType = activeNode['@type'];
             const rawAttrs = activeNode.attributes || {};
             const childNodes = activeNode.children || activeNode.widgets || [];
 
-            // 2. Selection & ContextBus Identity Attributes
             let mId = activeNode.mariaId || activeNode.id || activeNode.attributes?.name || activeNode.name || '';
             if ((!mId || mId === 'maria_field' || mId === 'field') && (rawAttrs.name || activeNode.name)) {
                 const fName = rawAttrs.name || activeNode.name;
@@ -271,7 +262,6 @@
                 };
             };
 
-            // Helper to recursively render children
             const renderChildren = () => {
                 return childNodes.map(child => {
                     if (typeof child === 'string' || typeof child === 'number') return child;
@@ -282,100 +272,147 @@
                 });
             };
 
-            // Floating AI action badge
-            const renderActionBadge = (node) => {
-                const nodeTitle = node.attributes?.name || node.name || node.title || node._moquiTag || 'element';
-                return Vue.h('div', {
-                    class: [
-                        'agi-action-badge absolute-top-right z-top row items-center q-gutter-x-xs rounded-borders shadow-2',
-                        isSelected ? 'bg-primary text-white is-active' : 'bg-slate-800 text-slate-200'
-                    ].join(' '),
-                    style: 'transform: translate(-4px, -50%); font-size: 10px; padding: 2px 6px; border-radius: 4px; pointer-events: auto; cursor: pointer;'
-                }, [
-                    Vue.h('span', { class: 'text-weight-bold font-mono' }, nodeTitle),
-                    Vue.h(Vue.resolveComponent('q-btn'), {
-                        icon: 'terminal',
-                        size: 'xs',
-                        dense: true,
-                        flat: true,
-                        round: true,
-                        color: 'white',
-                        onClick: (e) => {
-                            e.stopPropagation();
-                            const mId = node.mariaId || node.id || nodeTitle;
-                            const payload = {
-                                event: 'open-prompt-editor',
-                                focusCoordinate: mId,
-                                artifactLocation: this.context?.screenPath || '',
-                                targetComponent: 'nursinghome',
-                                adHocPrompt: `Refactor element [${nodeTitle}] (${mId}): `
-                            };
+            // 🛡️ 1. INTERCEPT subscreens-active ONLY WHEN INSIDE A SANDBOXED CANVAS
+            if ((tag === 'subscreens-active' || explicitType === 'm-subscreens-active' || tag === 'm-subscreens-active') && this.context?.isSandboxed) {
+                const activeName = this.context?.currentPathList?.[0] || 'Subscreen';
+                const subTree = this.context?.activeSubscreenTree;
 
-                            try {
-                                if (window.__agiContextBus) window.__agiContextBus.postMessage(payload);
-                            } catch (err) { }
-                            window.dispatchEvent(new CustomEvent('open-prompt-editor', { detail: payload }));
-                        }
-                    })
-                ]);
-            };
+                // Render child subscreen widgets if available and not already inside a subscreen
+                if (subTree && !this.context?._inSubscreen) {
+                    let directWidgets = [];
+                    if (Array.isArray(subTree.children)) {
+                        const wNode = subTree.children.find(c => (c._moquiTag || c.name || c.tag) === 'widgets');
+                        directWidgets = (wNode && Array.isArray(wNode.children)) ? wNode.children : subTree.children;
+                    }
 
-            // 3. TIER 1: Check for explicitly registered custom components
-            const isNativeHtmlTag = (t) => ['div', 'span', 'form', 'button', 'label', 'input', 'select', 'textarea', 'p', 'table', 'tr', 'td', 'th'].includes(t);
+                    // Extract child screen's own subscreens
+                    const childSubscreens = subTree.subscreens || null;
+                    let childSubList = [];
+                    if (childSubscreens) {
+                        const raw = Array.isArray(childSubscreens.children)
+                            ? childSubscreens.children
+                            : (Array.isArray(childSubscreens) ? childSubscreens : []);
 
-            // Intercept form-list so IDE doesn't invoke live runtime MFormList
-            if (tag === 'form-list' || explicitType === 'm-form-list' || tag === 'm-form-list') {
-                const fields = childNodes.filter(c => (c._moquiTag === 'field' || c.name === 'field'));
-                return Vue.h(Vue.resolveComponent('q-card'), withSelection({
-                    flat: false,
-                    bordered: true
-                }, 'q-mb-md full-width bg-white rounded-borders shadow-1 relative-position agi-hover-container'), {
-                    default: () => [
-                        renderActionBadge(activeNode),
-                        Vue.h('div', { class: 'bg-blue-grey-1 q-pa-sm text-subtitle2 text-weight-bold row items-center justify-between' }, [
-                            Vue.h('span', `List: ${activeNode.name || 'Data Grid'}`),
-                            Vue.h(Vue.resolveComponent('q-icon'), { name: 'table_view', size: '18px', color: 'blue-grey-6' })
+                        childSubList = raw.map(item => {
+                            const attrs = item.attributes || {};
+                            const sName = (item.name && item.name !== 'subscreens-item') ? item.name : (attrs.name || '');
+                            const sTitle = (item.menuTitle && item.menuTitle !== 'subscreens-item')
+                                ? item.menuTitle
+                                : (attrs['menu-title'] || attrs.menuTitle || sName);
+                            return { name: sName, menuTitle: sTitle, location: item.location || attrs.location || '' };
+                        });
+                    }
+
+                    // Create an isolated context so child screens DO NOT inherit parent navigation
+                    const isolatedChildContext = Object.assign({}, this.context, {
+                        _inSubscreen: true,
+                        activeSubscreenTree: null, // Cleared so child does not recurse
+                        subscreens: childSubscreens,
+                        subscreenList: childSubList, // Resets to child's own subscreen items
+                        defaultSubscreen: childSubscreens?.defaultItem || (childSubList[0]?.name || ''),
+                        currentPathList: childSubscreens?.defaultItem ? [childSubscreens.defaultItem] : []
+                    });
+
+                    return Vue.h('div', withSelection({
+                        id: activeNode.id || 'moqui-subscreens-active-host',
+                        class: 'subscreens-active-host full-width q-pa-sm bg-white rounded-borders shadow-1'
+                    }), [
+                        // Viewport Header Bar
+                        Vue.h('div', { class: 'q-pa-xs q-mb-sm row items-center justify-between bg-blue-grey-10 text-cyan-3 rounded-borders font-mono text-caption' }, [
+                            Vue.h('div', { class: 'row items-center q-gutter-x-xs' }, [
+                                Vue.h(Vue.resolveComponent('q-icon'), { name: 'dashboard', size: '16px', color: 'cyan-4' }),
+                                Vue.h('span', { class: 'text-weight-bold' }, `Active Subscreen: ${activeName}`)
+                            ]),
+                            Vue.h('span', { class: 'text-grey-5 font-mono', style: 'font-size: 10px;' }, subTree.location || '')
                         ]),
-                        Vue.h('div', { class: 'q-pa-xs scroll' }, [
-                            Vue.h('table', { class: 'full-width text-left', style: 'border-collapse: collapse;' }, [
-                                Vue.h('thead', [
-                                    Vue.h('tr', { class: 'bg-grey-2 text-caption text-grey-8' }, fields.map(f => {
-                                        const hField = (f.children || []).find(c => c._moquiTag === 'header-field' || c.name === 'header-field');
-                                        const title = hField?.title || hField?.attributes?.title || f.title || f.name || 'Column';
-                                        return Vue.h('th', { class: 'q-pa-sm border-bottom' }, title);
-                                    }))
-                                ]),
-                                Vue.h('tbody', [
-                                    Vue.h('tr', { class: 'text-caption' }, fields.map(f => {
-                                        const dField = (f.children || []).find(c => c._moquiTag === 'default-field' || c.name === 'default-field') || f;
-                                        return Vue.h('td', { class: 'q-pa-sm text-grey-6', style: 'border-bottom: 1px solid #eee;' }, [
-                                            Vue.h(window.AgiComponents['m-blueprint-node'], { node: dField, context: this.context })
-                                        ]);
-                                    }))
-                                ])
-                            ])
-                        ])
-                    ]
-                });
+
+                        // Render child widgets directly
+                        Vue.h('div', { class: 'column q-gutter-y-sm full-width' }, directWidgets.map((child, idx) => {
+                            return Vue.h(window.AgiComponents['m-blueprint-node'], {
+                                key: child.mariaId || child.id || idx,
+                                node: child,
+                                context: isolatedChildContext
+                            });
+                        }))
+                    ]);
+                }
+
+                // Fallback placeholder when no subscreen is loaded or while nested
+                return Vue.h('div', withSelection({
+                    id: activeNode.id || 'moqui-subscreens-active-host',
+                    class: 'q-pa-md bg-white rounded-borders border-dashed text-center text-grey-7 full-width'
+                }), [
+                    Vue.h(Vue.resolveComponent('q-icon'), { name: 'dashboard', size: '28px', color: 'primary', class: 'q-mb-xs' }),
+                    Vue.h('div', { class: 'text-subtitle2 text-weight-bold text-primary font-mono' }, `[Subscreen Viewport: ${activeName}]`),
+                    Vue.h('div', { class: 'text-caption text-grey-5' }, 'Select a subscreen tab above to view its contents.')
+                ]);
             }
 
+            // 🛡️ 2. INTERCEPT subscreens-tabs ONLY WHEN INSIDE A SANDBOXED CANVAS
+            if ((tag === 'subscreens-tabs' || explicitType === 'm-subscreens-tabs' || tag === 'm-subscreens-tabs') && this.context?.isSandboxed) {
+                const rawSubs = activeNode.subscreenList
+                    || this.context?.subscreenList
+                    || this.context?.subscreens?.children
+                    || [];
+
+                const subItems = rawSubs.map(item => {
+                    const attrs = item.attributes || {};
+                    const sName = (item.name && item.name !== 'subscreens-item') ? item.name : (attrs.name || '');
+                    const sTitle = (item.menuTitle && item.menuTitle !== 'subscreens-item')
+                        ? item.menuTitle
+                        : (attrs['menu-title'] || attrs.menuTitle || sName);
+                    return { name: sName, menuTitle: sTitle, location: item.location || attrs.location || '' };
+                });
+
+                const currentActive = this.context?.currentPathList?.[0]
+                    || activeNode.defaultItem
+                    || this.context?.defaultSubscreen
+                    || (subItems[0]?.name || '');
+
+                return Vue.h('div', withSelection({
+                    id: activeNode.id || 'nursinghome-nav-tabs',
+                    class: 'q-my-xs full-width'
+                }), [
+                    Vue.h(Vue.resolveComponent('q-tabs'), {
+                        dense: true,
+                        noCaps: true,
+                        inlineLabel: true,
+                        modelValue: currentActive,
+                        activeColor: 'primary',
+                        indicatorColor: 'primary',
+                        align: 'left',
+                        class: 'bg-white text-grey-8 rounded-borders shadow-1'
+                    }, () => subItems.map(sub => Vue.h(Vue.resolveComponent('q-tab'), {
+                        key: sub.name,
+                        name: sub.name,
+                        label: sub.menuTitle || sub.name,
+                        icon: 'tab'
+                    }))),
+                    Vue.h(Vue.resolveComponent('q-separator'), { class: 'q-mb-sm' })
+                ]);
+            }
+
+            // 🛡️ 3. RESOLVE CUSTOM COMPONENTS (Checks AgiComponents first, falls back to resolveComponent ONLY if registered)
+            const isNativeHtmlTag = (t) => ['div', 'span', 'form', 'button', 'label', 'input', 'select', 'textarea', 'p', 'table', 'tr', 'td', 'th'].includes(t);
             let CustomComp = null;
-            if (explicitType && !isNativeHtmlTag(explicitType)) {
-                CustomComp = window.AgiComponents[explicitType] || Vue.resolveComponent(explicitType);
-            } else if (tag && !isNativeHtmlTag(tag)) {
+
+            if (explicitType && window.AgiComponents && window.AgiComponents[explicitType]) {
+                CustomComp = window.AgiComponents[explicitType];
+            } else if (tag && window.AgiComponents && window.AgiComponents[tag]) {
                 CustomComp = window.AgiComponents[tag];
+            } else if (explicitType && !isNativeHtmlTag(explicitType) && !['m-screen-layout', 'm-screen-header', 'm-screen-content'].includes(explicitType)) {
+                try {
+                    CustomComp = Vue.resolveComponent(explicitType);
+                } catch (e) { }
             }
 
             if (CustomComp && typeof CustomComp !== 'string') {
                 let propsMap = withSelection({ ...rawAttrs });
                 if (activeNode.id) propsMap.id = activeNode.id;
-
-                return Vue.h(CustomComp, propsMap, {
-                    default: renderChildren
-                });
+                return Vue.h(CustomComp, propsMap, { default: renderChildren });
             }
 
-            // 4. TIER 2: Semantic Moqui XML AST Mapping to Quasar UI
+            // 4. STANDARD SEMANTIC MOQUI AST MAPPING
             switch (tag) {
                 case 'screen':
                 case 'widgets':
@@ -386,19 +423,13 @@
                         flat: false,
                         bordered: true
                     }, 'shadow-1 q-mb-md full-width bg-white rounded-borders relative-position agi-hover-container'), {
-                        default: () => [
-                            renderActionBadge(activeNode),
-                            ...renderChildren()
-                        ]
+                        default: renderChildren
                     });
 
                 case 'form-single':
                     return Vue.h('form', withSelection({
                         onSubmit: (e) => e.preventDefault()
-                    }, 'moqui-form-single full-width column q-gutter-y-sm relative-position agi-hover-container'), [
-                        renderActionBadge(activeNode),
-                        ...renderChildren()
-                    ]);
+                    }, 'moqui-form-single full-width column q-gutter-y-sm relative-position agi-hover-container'), renderChildren());
 
                 case 'box-body':
                     return Vue.h(Vue.resolveComponent('q-card-section'), withSelection({}, 'q-pa-md column q-gutter-y-sm'), { default: renderChildren });
@@ -408,10 +439,7 @@
                     return Vue.h('div', withSelection({
                         'data-field-name': fieldIdentifier,
                         'name': fieldIdentifier
-                    }, 'moqui-field-wrapper full-width q-mb-xs relative-position agi-hover-container'), [
-                        renderActionBadge(activeNode),
-                        ...renderChildren()
-                    ]);
+                    }, 'moqui-field-wrapper full-width q-mb-xs relative-position agi-hover-container'), renderChildren());
 
                 case 'default-field':
                 case 'header-field':
