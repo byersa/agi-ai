@@ -114,5 +114,10 @@
                 <service name="org.moqui.ai.discussion.AgiDiscussionServices.rollback#DiscussionBatch"/>
             </method>
         </resource>
+        <resource name="pipeline-graph">
+            <method type="get">
+                <service name="org.moqui.ai.discussion.AgiDiscussionServices.get#PipelineGraph"/>
+            </method>
+        </resource>
     </resource>
 </resource>

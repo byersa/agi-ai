@@ -224,6 +224,7 @@
     <service verb="get" noun="DiscussionTranscript" type="inline">
         <in-parameters>
             <parameter name="discussionId" required="true"/>
+            <parameter name="includeArchived" default-value="N"/>
         </in-parameters>
         <out-parameters>
             <parameter name="discussion" type="Map"/>
@@ -231,26 +232,35 @@
             <parameter name="containerFacets" type="Map"/>
         </out-parameters>
         <actions>
-            <entity-find-one entity-name="org.moqui.ai.discussion.AgiDiscussion" value-field="discVal">
-                <field-map field-name="discussionId"/>
+            <!-- 1. Fetch the root discussion container record -->
+            <entity-find-one entity-name="org.moqui.ai.discussion.AgiDiscussion" value-field="discussionValue">
+                <field-map field-name="discussionId" from="discussionId"/>
             </entity-find-one>
-            <if condition="!discVal"><return error="true" message="Discussion ${discussionId} not found"/></if>
-            <set field="context.discussion" from="discVal.getMap()"/>
+            <if condition="!discussionValue">
+                <return error="true" message="Discussion ${discussionId} not found"/>
+            </if>
+            <set field="context.discussion" from="discussionValue.getMap()"/>
 
+            <!-- 2. Fetch discussion container facets -->
+            <entity-find entity-name="org.moqui.ai.discussion.AgiDiscussionFacet" list="facetList">
+                <econdition field-name="discussionId" from="discussionId"/>
+            </entity-find>
             <script><![CDATA[
-                def dFacets = ec.entity.find("org.moqui.ai.discussion.AgiDiscussionFacet")
-                    .condition("discussionId", discussionId)
-                    .list()
                 Map fMap = [:]
-                dFacets.each { fMap[it.facetKey] = it.facetValue }
+                facetList.each { fMap[it.facetKey] = it.facetValue }
                 context.containerFacets = fMap
+            ]]></script>
 
-                def msgList = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
-                    .condition("discussionId", discussionId)
-                    .orderBy("entryDate")
-                    .list()
+            <!-- 3. Fetch transcript messages according to archive filter -->
+            <entity-find entity-name="org.moqui.ai.discussion.AgiMessage" list="messageList">
+                <econdition field-name="discussionId" from="discussionId"/>
+                <econdition field-name="statusId" operator="not-equals" value="AmsArchived" ignore="includeArchived == 'Y'"/>
+                <order-by field-name="entryDate"/>
+            </entity-find>
 
-                context.messages = msgList.collect { m ->
+            <!-- 4. Assemble contents and facets for each message -->
+            <script><![CDATA[
+                context.messages = messageList.collect { m ->
                     def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
                         .condition("messageId", m.messageId)
                         .orderBy("contentSeqId")
@@ -268,6 +278,7 @@
                         role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
                         partyId              : m.partyId,
                         statusId             : m.statusId,
+                        isArchived           : (m.statusId == "AmsArchived"),
                         targetArtifactUri    : m.targetArtifactUri,
                         targetMariaId        : m.targetMariaId,
                         promotedWorkEffortId : m.promotedWorkEffortId,
@@ -1065,6 +1076,157 @@
                 }
 
                 context.restoredCount = count
+            ]]></script>
+        </actions>
+    </service>
+
+    
+    <!-- ===================================================================== -->
+    <!-- GET PIPELINE GRAPH (TIER 1 & TIER 2 DATA SOURCE)                      -->
+    <!-- ===================================================================== -->
+    <service verb="get" noun="PipelineGraph" type="inline">
+        <description>
+            Fetches all high-level pipeline initiatives for Tier 1 index,
+            and (if discussionId is provided) resolves the topological DAG of 
+            compute stage nodes and directed edges for the Tier 2 horizontal canvas.
+        </description>
+        <in-parameters>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+            <parameter name="discussionId"/>
+            <parameter name="includeArchived" default-value="N"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="initiatives" type="List"/>
+            <parameter name="pipelineNodes" type="List"/>
+            <parameter name="pipelineEdges" type="List"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                boolean showArchived = (includeArchived == "Y" || includeArchived == true)
+
+                // 1. Fetch all pipeline initiatives for Tier 1 Master Index
+                def discFind = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                if (targetComponent) {
+                    discFind.condition("targetComponent", "in", [targetComponent, null, ""])
+                }
+                if (!showArchived) {
+                    discFind.condition("statusId", "not-equals", "AgdStatusArchived")
+                }
+                def discussions = discFind.orderBy("-lastActivityDate, -fromDate, -discussionId").list()
+
+                context.initiatives = discussions.collect { disc ->
+                    String dId = disc.discussionId as String
+                    def dFacets = ec.entity.find("org.moqui.ai.discussion.AgiDiscussionFacet")
+                        .condition("discussionId", dId)
+                        .list()
+                    Map fMap = [:]
+                    dFacets.each { fMap[it.facetKey] = it.facetValue }
+
+                    // Determine terminal stage reached in this initiative
+                    def lastMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                        .condition("discussionId", dId)
+                        .orderBy("-entryDate")
+                        .limit(1)
+                        .one()
+
+                    String terminalStage = "discuss"
+                    if (lastMsg) {
+                        if (lastMsg.targetArtifactUri?.endsWith(".xml") && lastMsg.senderRoleEnumId == "AsrAssistant") {
+                            terminalStage = "build"
+                        } else if (lastMsg.stagedPayloadId) {
+                            terminalStage = "plan"
+                        }
+                    }
+
+                    [
+                        discussionId         : dId,
+                        name                 : disc.name ?: ("Pipeline #" + dId),
+                        shortName            : disc.shortName,
+                        targetComponent      : disc.targetComponent ?: targetComponent,
+                        targetArtifactUri    : disc.targetArtifactUri ?: "",
+                        statusId             : disc.statusId,
+                        isArchived           : (disc.statusId == "AgdStatusArchived"),
+                        promotedWorkEffortId : disc.promotedWorkEffortId,
+                        messageCount         : disc.messageCount ?: 0,
+                        lastActivityDate     : disc.lastActivityDate?.toString(),
+                        terminalStage        : terminalStage,
+                        facets               : fMap
+                    ]
+                }
+
+                // 2. If a specific pipeline is selected, assemble the DAG for Tier 2
+                List nodes = []
+                List edges = []
+
+                if (discussionId) {
+                    def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                        .condition("discussionId", discussionId)
+                    if (!showArchived) {
+                        msgFind.condition("statusId", "not-equals", "AmsArchived")
+                    }
+                    def allMsgs = msgFind.orderBy("entryDate").list()
+
+                    allMsgs.each { m ->
+                        String mId = m.messageId as String
+                        def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
+                            .condition("messageId", mId)
+                            .orderBy("contentSeqId")
+                            .list()
+                        def facets = ec.entity.find("org.moqui.ai.discussion.AgiMessageFacet")
+                            .condition("messageId", mId)
+                            .list()
+
+                        // Explicit boolean check avoids ClassCastException in EntityListImpl.find
+                        def titledContent = contents?.find { it.title != null && !it.title.toString().trim().isEmpty() }
+                        String title = titledContent?.title
+                        String body = contents ? contents*.bodyText.join("\n\n") : ""
+
+                        // Determine Action Type: discuss | plan | build
+                        String actionType = "discuss"
+                        String label = title ?: (body ? body.take(35) + "..." : "Turn #" + mId)
+
+                        if (m.stagedPayloadId) {
+                            actionType = "plan"
+                        } else if (m.targetArtifactUri && m.targetArtifactUri.endsWith(".xml")) {
+                            actionType = "build"
+                        } else {
+                            String lower = (title ?: body).toLowerCase()
+                            if (lower.startsWith("plan:") || lower.contains("subplan") || lower.contains("formulate plan")) {
+                                actionType = "plan"
+                            } else if (lower.startsWith("build:") || lower.contains("generate")) {
+                                actionType = "build"
+                            }
+                        }
+
+                        nodes.add([
+                            stageId              : mId,
+                            parentStageId        : m.parentMessageId,
+                            discussionId         : m.discussionId,
+                            actionType           : actionType, // 'discuss' | 'plan' | 'build'
+                            role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
+                            label                : label,
+                            fullText             : body,
+                            targetArtifactUri    : m.targetArtifactUri,
+                            stagedPayloadId      : m.stagedPayloadId,
+                            statusId             : m.statusId,
+                            isArchived           : (m.statusId == "AmsArchived"),
+                            entryDate            : m.entryDate?.toString(),
+                            facets               : facets*.getMap()
+                        ])
+
+                        if (m.parentMessageId) {
+                            edges.add([
+                                edgeId : "${m.parentMessageId}->${mId}",
+                                from   : m.parentMessageId as String,
+                                to     : mId,
+                                label  : "feeds"
+                            ])
+                        }
+                    }
+                }
+
+                context.pipelineNodes = nodes
+                context.pipelineEdges = edges
             ]]></script>
         </actions>
     </service>
