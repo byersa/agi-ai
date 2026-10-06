@@ -16,4 +16,25 @@
     <moqui.basic.Enumeration enumId="McpFacetVector" enumTypeId="McpFacetType"
                             description="Vector Embedding Descriptor" sequenceNum="50"/>
 
+    <!-- 1. Define Artifact Group for AGI AI Services & REST -->
+    <moqui.security.ArtifactGroup artifactGroupId="AGI_AI_ALL" 
+                                  description="AGI AI Services and REST APIs"/>
+
+    <!-- 2. Bind the Services to this Group (Prefix match) -->
+    <moqui.security.ArtifactGroupMember artifactGroupId="AGI_AI_ALL" 
+                                        artifactTypeEnumId="AtmService" 
+                                        artifactName="org.moqui.ai.*" 
+                                        nameIsPattern="Y"/>
+
+    <!-- 3. Bind the REST Path to this Group -->
+    <moqui.security.ArtifactGroupMember artifactGroupId="AGI_AI_ALL" 
+                                        artifactTypeEnumId="AtmRestPath" 
+                                        artifactName="/rest/s1/agi-ai.*" 
+                                        nameIsPattern="Y"/>
+
+    <!-- 4. Grant All Users Full Access (View, Create, Update, Delete) -->
+    <moqui.security.ArtifactAuthz artifactGroupId="AGI_AI_ALL" 
+                                  userGroupId="ALL_USERS" 
+                                  authzTypeEnumId="AuthzAll" 
+                                  authzActionEnumId="AuthzAll"/>
 </entity-facade-xml>
