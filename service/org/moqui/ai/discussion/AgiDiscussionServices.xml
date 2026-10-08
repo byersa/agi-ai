@@ -379,7 +379,6 @@
             <parameter name="parentMessageId"/>
             <parameter name="instructionName"/>
             <parameter name="mode" default-value="discuss"/>
-            <!-- Dynamic Profile Override Parameter -->
             <parameter name="aiProfileName"/>
         </in-parameters>
         <out-parameters>
@@ -406,10 +405,6 @@
                 Map mergedFacets = [:]
                 dFacets.each { mergedFacets[it.facetKey] = it.facetValue }
 
-                // -------------------------------------------------------------------------
-                // DYNAMIC AI PROFILE RESOLUTION
-                // Cascade: Explicit Param -> Container Facet -> Component Default -> ec.llm Default
-                // -------------------------------------------------------------------------
                 String resolvedProfile = aiProfileName
                 if (!resolvedProfile && mergedFacets) {
                     resolvedProfile = mergedFacets.aiProfile ?: mergedFacets.modelProfile ?: mergedFacets.profile
@@ -429,7 +424,7 @@
                         resolvedProfile = "gemini"
                     }
                 }
-                ec.logger.info("🎯 [dispatch#AgentTurn] Resolved dynamic aiProfileName: '${resolvedProfile}' for discussion #${discussionId}")
+                ec.logger.info("🤖 [dispatch#AgentTurn] Resolved dynamic aiProfileName: '${resolvedProfile}' for discussion #${discussionId}")
 
                 def loadFirstExisting = { List<String> paths ->
                     for (String path : paths) {
@@ -653,7 +648,6 @@
 
                         context.stagedPayloadId = newPayload.agiPayloadId
 
-                        // Link stagedPayloadId to assistant message
                         def msgVal = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                             .condition("messageId", asstMsgId)
                             .one()
@@ -662,7 +656,6 @@
                             msgVal.update()
                         }
 
-                        // Also link stagedPayloadId to parent user prompt message
                         if (parentMessageId) {
                             def parentUserMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                                 .condition("messageId", parentMessageId)
@@ -749,7 +742,6 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
-                // 1. Idempotency Guard: Check if active subplan children already exist under parentMessageId
                 def existingChildren = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
                     .condition("discussionId", discussionId)
                     .condition("parentMessageId", parentMessageId)
@@ -784,7 +776,7 @@
                     String rawTitle = sp.title ?: sp.name ?: sp.phaseName ?: sp.summary ?: "Phase ${idx + 1} Scope"
                     String phaseLabel = sp.phase ? (sp.phase.toString().toLowerCase().startsWith("phase") ? "${sp.phase}" : "Phase ${sp.phase}") : ""
                     String subplanTitle = phaseLabel ? "${phaseLabel}:${rawTitle}" : rawTitle
-                    String nodeTreeLabel = "📑 " + subplanTitle
+                    String nodeTreeLabel = "📋 " + subplanTitle
 
                     String subplanBody = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(sp))
 
@@ -1080,15 +1072,14 @@
         </actions>
     </service>
 
-    
     <!-- ===================================================================== -->
     <!-- GET PIPELINE GRAPH (TIER 1 & TIER 2 DATA SOURCE)                      -->
     <!-- ===================================================================== -->
-    <service verb="get" noun="PipelineGraph" type="inline">
+    <service verb="get" noun="PipelineGraph" type="inline" authenticate="anonymous">
         <description>
             Fetches all high-level pipeline initiatives for Tier 1 index,
-            and (if discussionId is provided) resolves the topological DAG of 
-            compute stage nodes and directed edges for the Tier 2 horizontal canvas.
+            and resolves the DAG of compute steps for the Tier 2 canvas.
+            Pulls directly from AgiPipelineStep with fallback to AgiMessage.
         </description>
         <in-parameters>
             <parameter name="targetComponent" default-value="nursinghome"/>
@@ -1104,7 +1095,7 @@
             <script><![CDATA[
                 boolean showArchived = (includeArchived == "Y" || includeArchived == true)
 
-                // 1. Fetch all pipeline initiatives for Tier 1 Master Index
+                // 1. Fetch initiatives for Tier 1 Index
                 def discFind = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
                 if (targetComponent) {
                     discFind.condition("targetComponent", "in", [targetComponent, null, ""])
@@ -1123,18 +1114,28 @@
                     dFacets.each { fMap[it.facetKey] = it.facetValue }
 
                     // Determine terminal stage reached in this initiative
-                    def lastMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    String terminalStage = "discuss"
+                    def lastStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
                         .condition("discussionId", dId)
-                        .orderBy("-entryDate")
+                        .orderBy("-stepSequenceNum, -createdDate")
                         .limit(1)
                         .one()
 
-                    String terminalStage = "discuss"
-                    if (lastMsg) {
-                        if (lastMsg.targetArtifactUri?.endsWith(".xml") && lastMsg.senderRoleEnumId == "AsrAssistant") {
-                            terminalStage = "build"
-                        } else if (lastMsg.stagedPayloadId) {
-                            terminalStage = "plan"
+                    if (lastStep) {
+                        if (lastStep.stanceEnumId == "AamBuild" || lastStep.stanceEnumId == "build") terminalStage = "build"
+                        else if (lastStep.stanceEnumId == "AamPlan" || lastStep.stanceEnumId == "plan") terminalStage = "plan"
+                    } else {
+                        def lastMsg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("discussionId", dId)
+                            .orderBy("-entryDate")
+                            .limit(1)
+                            .one()
+                        if (lastMsg) {
+                            if (lastMsg.targetArtifactUri?.endsWith(".xml") && lastMsg.senderRoleEnumId == "AsrAssistant") {
+                                terminalStage = "build"
+                            } else if (lastMsg.stagedPayloadId) {
+                                terminalStage = "plan"
+                            }
                         }
                     }
 
@@ -1154,73 +1155,116 @@
                     ]
                 }
 
-                // 2. If a specific pipeline is selected, assemble the DAG for Tier 2
+                // 2. Assemble DAG for Tier 2 Canvas
                 List nodes = []
                 List edges = []
 
                 if (discussionId) {
-                    def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    def stepFind = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
                         .condition("discussionId", discussionId)
                     if (!showArchived) {
-                        msgFind.condition("statusId", "not-equals", "AmsArchived")
+                        stepFind.condition("statusId", "not-equals", "PlsArchived")
                     }
-                    def allMsgs = msgFind.orderBy("entryDate").list()
+                    def pipelineSteps = stepFind.orderBy("stepSequenceNum, createdDate").list()
 
-                    allMsgs.each { m ->
-                        String mId = m.messageId as String
-                        def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
-                            .condition("messageId", mId)
-                            .orderBy("contentSeqId")
-                            .list()
-                        def facets = ec.entity.find("org.moqui.ai.discussion.AgiMessageFacet")
-                            .condition("messageId", mId)
-                            .list()
+                    if (pipelineSteps && !pipelineSteps.isEmpty()) {
+                        // 2A. FIRST-CLASS PIPELINE STEP MAPPING
+                        pipelineSteps.each { s ->
+                            String sId = s.pipelineStepId as String
+                            String stance = "plan"
+                            if (s.stanceEnumId == "AamBuild" || s.stanceEnumId == "build") stance = "build"
+                            else if (s.stanceEnumId == "AamDiscuss" || s.stanceEnumId == "discuss") stance = "discuss"
 
-                        // Explicit boolean check avoids ClassCastException in EntityListImpl.find
-                        def titledContent = contents?.find { it.title != null && !it.title.toString().trim().isEmpty() }
-                        String title = titledContent?.title
-                        String body = contents ? contents*.bodyText.join("\n\n") : ""
+                            String egressJson = null
+                            if (s.egressPayloadId) {
+                                def ep = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                    .condition("agiPayloadId", s.egressPayloadId)
+                                    .one()
+                                egressJson = ep?.payloadJsonData
+                            }
 
-                        // Determine Action Type: discuss | plan | build
-                        String actionType = "discuss"
-                        String label = title ?: (body ? body.take(35) + "..." : "Turn #" + mId)
+                            String ingressJson = null
+                            if (s.ingressPayloadId) {
+                                def ip = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                    .condition("agiPayloadId", s.ingressPayloadId)
+                                    .one()
+                                ingressJson = ip?.payloadJsonData
+                            }
 
-                        if (m.stagedPayloadId) {
-                            actionType = "plan"
-                        } else if (m.targetArtifactUri && m.targetArtifactUri.endsWith(".xml")) {
-                            actionType = "build"
-                        } else {
-                            String lower = (title ?: body).toLowerCase()
-                            if (lower.startsWith("plan:") || lower.contains("subplan") || lower.contains("formulate plan")) {
-                                actionType = "plan"
-                            } else if (lower.startsWith("build:") || lower.contains("generate")) {
-                                actionType = "build"
+                            nodes.add([
+                                stageId              : sId,
+                                pipelineStepId       : sId,
+                                parentStageId        : s.parentStepId,
+                                parentStepId         : s.parentStepId,
+                                discussionId         : s.discussionId,
+                                stepSequenceNum      : s.stepSequenceNum,
+                                actionType           : stance,
+                                statusId             : s.statusId,
+                                isArchived           : (s.statusId == "PlsArchived"),
+                                label                : s.stepLabel ?: ("Step #" + sId),
+                                directivePrompt      : s.directivePrompt,
+                                ingressPayloadId     : s.ingressPayloadId,
+                                egressPayloadId      : s.egressPayloadId,
+                                ingressJsonData      : ingressJson,
+                                egressJsonData       : egressJson,
+                                fullText             : egressJson ?: s.directivePrompt,
+                                targetArtifactUri    : s.targetArtifactUri,
+                                entryDate            : s.createdDate?.toString()
+                            ])
+
+                            if (s.parentStepId) {
+                                edges.add([
+                                    edgeId : "${s.parentStepId}->${sId}",
+                                    from   : s.parentStepId as String,
+                                    to     : sId,
+                                    label  : "feeds"
+                                ])
                             }
                         }
+                    } else {
+                        // 2B. FALLBACK TO LEGACY DISCUSSION MESSAGES
+                        def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                            .condition("discussionId", discussionId)
+                        if (!showArchived) msgFind.condition("statusId", "not-equals", "AmsArchived")
+                        def allMsgs = msgFind.orderBy("entryDate").list()
 
-                        nodes.add([
-                            stageId              : mId,
-                            parentStageId        : m.parentMessageId,
-                            discussionId         : m.discussionId,
-                            actionType           : actionType, // 'discuss' | 'plan' | 'build'
-                            role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
-                            label                : label,
-                            fullText             : body,
-                            targetArtifactUri    : m.targetArtifactUri,
-                            stagedPayloadId      : m.stagedPayloadId,
-                            statusId             : m.statusId,
-                            isArchived           : (m.statusId == "AmsArchived"),
-                            entryDate            : m.entryDate?.toString(),
-                            facets               : facets*.getMap()
-                        ])
+                        allMsgs.each { m ->
+                            String mId = m.messageId as String
+                            def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
+                                .condition("messageId", mId)
+                                .orderBy("contentSeqId")
+                                .list()
+                            def titledContent = contents?.find { it.title != null && !it.title.toString().trim().isEmpty() }
+                            String title = titledContent?.title
+                            String body = contents ? contents*.bodyText.join("\n\n") : ""
 
-                        if (m.parentMessageId) {
-                            edges.add([
-                                edgeId : "${m.parentMessageId}->${mId}",
-                                from   : m.parentMessageId as String,
-                                to     : mId,
-                                label  : "feeds"
+                            String actionType = m.stagedPayloadId ? "plan" : (m.targetArtifactUri?.endsWith(".xml") ? "build" : "discuss")
+
+                            nodes.add([
+                                stageId              : mId,
+                                parentStageId        : m.parentMessageId,
+                                discussionId         : m.discussionId,
+                                actionType           : actionType,
+                                role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
+                                label                : title ?: (body ? body.take(35) + "..." : "Turn #" + mId),
+                                fullText             : body,
+                                targetArtifactUri    : m.targetArtifactUri,
+                                stagedPayloadId      : m.stagedPayloadId,
+                                ingressPayloadId     : m.stagedPayloadId,
+                                egressPayloadId      : m.stagedPayloadId,
+                                statusId             : m.statusId,
+                                isArchived           : (m.statusId == "AmsArchived"),
+                                entryDate            : m.entryDate?.toString()
                             ])
+
+                            if (m.parentMessageId) {
+                                edges.add([
+                                    edgeId : "${m.parentMessageId}->${mId}",
+                                    from   : m.parentMessageId as String,
+                                    to     : mId,
+                                    label  : "feeds"
+                                ])
+                            }
                         }
                     }
                 }

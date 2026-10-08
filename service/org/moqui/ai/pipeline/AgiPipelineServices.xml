@@ -1,0 +1,278 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-3.0.xsd">
+
+    <!-- ===================================================================== -->
+    <!-- RECORD AND DISPATCH PIPELINE STEP                                     -->
+    <!-- ===================================================================== -->
+    <service verb="recordAndDispatch" noun="PipelineStep" type="inline">
+        <description>
+            Executes a single pipeline compute step. Records an AgiPipelineStep in 
+            PlsExecuting status, triggers the AI agent dispatch, writes the output 
+            into AgiPayload, and updates egressPayloadId upon completion.
+        </description>
+        <in-parameters>
+            <parameter name="discussionId" required="true"/>
+            <parameter name="parentStepId"/>
+            <parameter name="stanceEnumId" default-value="AamPlan"/><!-- AamDiscuss, AamPlan, AamBuild -->
+            <parameter name="directivePrompt" required="true"/>
+            <parameter name="ingressPayloadId"/>
+            <parameter name="targetArtifactUri"/>
+            <parameter name="stepLabel"/>
+            <parameter name="aiProfileName"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="pipelineStepId"/>
+            <parameter name="egressPayloadId"/>
+            <parameter name="assistantMessageId"/>
+            <parameter name="completionText"/>
+            <parameter name="statusId"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", discussionId)
+                    .one()
+                if (!disc) { ec.message.addError("Discussion ${discussionId} not found"); return }
+                String comp = disc.targetComponent ?: "nursinghome"
+
+                // Determine step sequence number
+                int nextSeq = 1
+                def lastStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                    .condition("discussionId", discussionId)
+                    .orderBy("-stepSequenceNum")
+                    .limit(1)
+                    .one()
+                if (lastStep?.stepSequenceNum) {
+                    nextSeq = ((lastStep.stepSequenceNum as Integer) ?: 0) + 1
+                }
+
+                // Map stanceEnumId string to mode code (e.g., AamPlan -> plan)
+                String modeCode = "plan"
+                if (stanceEnumId == "AamBuild" || stanceEnumId == "build") modeCode = "build"
+                else if (stanceEnumId == "AamDiscuss" || stanceEnumId == "discuss") modeCode = "discuss"
+
+                String normalizedStance = stanceEnumId
+                if (normalizedStance == "plan") normalizedStance = "AamPlan"
+                else if (normalizedStance == "build") normalizedStance = "AamBuild"
+                else if (normalizedStance == "discuss") normalizedStance = "AamDiscuss"
+
+                // 1. Create the AgiPipelineStep in PlsExecuting state
+                def newStep = ec.entity.makeValue("org.moqui.ai.pipeline.AgiPipelineStep")
+                newStep.discussionId = discussionId
+                newStep.parentStepId = parentStepId ?: null
+                newStep.stepSequenceNum = nextSeq
+                newStep.stanceEnumId = normalizedStance
+                newStep.statusId = "PlsExecuting"
+                newStep.stepLabel = stepLabel ?: (directivePrompt.take(50) + "...")
+                newStep.ingressPayloadId = ingressPayloadId ?: null
+                newStep.directivePrompt = directivePrompt
+                newStep.targetArtifactUri = targetArtifactUri ?: disc.targetArtifactUri
+                newStep.createdDate = ec.user.nowTimestamp
+                newStep.setSequencedIdPrimary()
+                newStep.create()
+
+                context.pipelineStepId = newStep.pipelineStepId
+
+                // 2. Locate parent message if a parent step exists
+                String parentMsgId = null
+                if (parentStepId) {
+                    def pStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                        .condition("pipelineStepId", parentStepId)
+                        .one()
+                    parentMsgId = pStep?.assistantMessageId ?: pStep?.userMessageId
+                }
+
+                // 3. Record the User prompt message for audit trail
+                Map userTurnResult = ec.service.sync()
+                    .name("org.moqui.ai.discussion.AgiDiscussionServices.record#DiscussionTurn")
+                    .parameters([
+                        discussionId      : discussionId,
+                        parentMessageId   : parentMsgId,
+                        senderRoleEnumId  : "AsrUser",
+                        content           : directivePrompt,
+                        title             : "Directive #${newStep.pipelineStepId}",
+                        targetArtifactUri : newStep.targetArtifactUri
+                    ])
+                    .call()
+                String userMsgId = userTurnResult.messageId
+                newStep.userMessageId = userMsgId
+
+                // 4. Dispatch the AI execution turn
+                Map dispatchResult = ec.service.sync()
+                    .name("org.moqui.ai.discussion.AgiDiscussionServices.dispatch#AgentTurn")
+                    .parameters([
+                        discussionId    : discussionId,
+                        userPrompt      : directivePrompt,
+                        parentMessageId : userMsgId,
+                        mode            : modeCode,
+                        aiProfileName   : aiProfileName
+                    ])
+                    .call()
+
+                String asstMsgId = dispatchResult.assistantMessageId
+                String agentText = dispatchResult.completionText
+                String generatedPayloadId = dispatchResult.stagedPayloadId
+
+                context.assistantMessageId = asstMsgId
+                context.completionText = agentText
+
+                // 5. If dispatch didn't auto-create an AgiPayload, encapsulate completion
+                if (!generatedPayloadId && agentText) {
+                    def fallbackPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                    fallbackPayload.modeEnumId = normalizedStance
+                    fallbackPayload.statusId = "PlsCommitted"
+                    fallbackPayload.targetComponent = comp
+                    fallbackPayload.artifactUri = newStep.targetArtifactUri
+                    fallbackPayload.discussionId = discussionId
+                    fallbackPayload.messageId = asstMsgId
+                    fallbackPayload.title = "Step #${newStep.pipelineStepId} Egress"
+                    fallbackPayload.userPromptText = directivePrompt
+                    fallbackPayload.payloadJsonData = agentText
+                    fallbackPayload.createdDate = ec.user.nowTimestamp
+                    fallbackPayload.setSequencedIdPrimary()
+                    fallbackPayload.create()
+                    generatedPayloadId = fallbackPayload.agiPayloadId
+                }
+
+                // 6. Finalize the Step with Egress Payload
+                newStep.assistantMessageId = asstMsgId
+                newStep.egressPayloadId = generatedPayloadId
+                newStep.statusId = "PlsCommitted"
+                newStep.lastUpdatedDate = ec.user.nowTimestamp
+                newStep.update()
+
+                context.egressPayloadId = generatedPayloadId
+                context.statusId = "PlsCommitted"
+                ec.logger.info("⚡ [recordAndDispatch#PipelineStep] Successfully committed step #${newStep.pipelineStepId} (egress #${generatedPayloadId})")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- FORK PIPELINE STEP (BRANCHING & RE-RUN)                               -->
+    <!-- ===================================================================== -->
+    <service verb="fork" noun="PipelineStep" type="inline">
+        <description>
+            Creates an unexecuted draft step branching off an existing step.
+            Optionally clones the source payload if modifications were made.
+            egressPayloadId is explicitly left null.
+        </description>
+        <in-parameters>
+            <parameter name="sourceStepId" required="true"/>
+            <parameter name="directivePrompt"/>
+            <parameter name="modifiedPayloadJson"/>
+            <parameter name="stanceEnumId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="newStepId"/>
+            <parameter name="ingressPayloadId"/>
+            <parameter name="statusId"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def srcStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                    .condition("pipelineStepId", sourceStepId)
+                    .one()
+                if (!srcStep) { ec.message.addError("Source Step ${sourceStepId} not found"); return }
+
+                String discId = srcStep.discussionId
+                String activeIngressId = srcStep.egressPayloadId ?: srcStep.ingressPayloadId
+
+                // If user modified the payload JSON, clone it to preserve provenance
+                if (modifiedPayloadJson && modifiedPayloadJson.trim()) {
+                    def srcPayload = activeIngressId ? ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                        .condition("agiPayloadId", activeIngressId)
+                        .one() : null
+
+                    def clonedPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                    clonedPayload.modeEnumId = srcStep.stanceEnumId
+                    clonedPayload.statusId = "PlsDraft"
+                    clonedPayload.targetComponent = srcPayload?.targetComponent ?: "nursinghome"
+                    clonedPayload.artifactUri = srcStep.targetArtifactUri
+                    clonedPayload.discussionId = discId
+                    clonedPayload.title = "Forked Ingress from Step #${sourceStepId}"
+                    clonedPayload.userPromptText = directivePrompt ?: srcStep.directivePrompt
+                    clonedPayload.payloadJsonData = modifiedPayloadJson.trim()
+                    clonedPayload.parentPayloadId = activeIngressId
+                    clonedPayload.createdDate = ec.user.nowTimestamp
+                    clonedPayload.setSequencedIdPrimary()
+                    clonedPayload.create()
+
+                    activeIngressId = clonedPayload.agiPayloadId
+                }
+
+                // Determine sequence num for the branch
+                int branchSeq = ((srcStep.stepSequenceNum as Integer) ?: 1) + 1
+
+                // Create the new Draft step
+                def forkedStep = ec.entity.makeValue("org.moqui.ai.pipeline.AgiPipelineStep")
+                forkedStep.discussionId = discId
+                forkedStep.parentStepId = sourceStepId
+                forkedStep.stepSequenceNum = branchSeq
+                forkedStep.stanceEnumId = stanceEnumId ?: srcStep.stanceEnumId
+                forkedStep.statusId = "PlsDraft"
+                forkedStep.stepLabel = "Branch from #${sourceStepId}"
+                forkedStep.ingressPayloadId = activeIngressId
+                forkedStep.directivePrompt = directivePrompt ?: srcStep.directivePrompt
+                forkedStep.egressPayloadId = null // Unexecuted
+                forkedStep.targetArtifactUri = srcStep.targetArtifactUri
+                forkedStep.createdDate = ec.user.nowTimestamp
+                forkedStep.setSequencedIdPrimary()
+                forkedStep.create()
+
+                context.newStepId = forkedStep.pipelineStepId
+                context.ingressPayloadId = activeIngressId
+                context.statusId = "PlsDraft"
+
+                ec.logger.info("🔱 [fork#PipelineStep] Created draft step #${forkedStep.pipelineStepId} branching from #${sourceStepId}")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- ARCHIVE PIPELINE BRANCH (CASCADE SOFT-DELETE)                         -->
+    <!-- ===================================================================== -->
+    <service verb="archive" noun="PipelineBranch" type="inline">
+        <description>
+            Recursively flags an AgiPipelineStep and all downstream descendant 
+            steps as PlsArchived.
+        </description>
+        <in-parameters>
+            <parameter name="pipelineStepId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="archivedCount" type="Integer"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                int count = 0
+
+                def archiveStepRecursive
+                archiveStepRecursive = { String stepId ->
+                    def step = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                        .condition("pipelineStepId", stepId)
+                        .one()
+                    if (step && step.statusId != "PlsArchived") {
+                        step.statusId = "PlsArchived"
+                        step.lastUpdatedDate = ec.user.nowTimestamp
+                        step.update()
+                        count++
+
+                        // Cascade to children
+                        def children = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                            .condition("parentStepId", stepId)
+                            .list()
+                        children.each { child ->
+                            archiveStepRecursive(child.pipelineStepId as String)
+                        }
+                    }
+                }
+
+                archiveStepRecursive(pipelineStepId)
+                context.archivedCount = count
+            ]]></script>
+        </actions>
+    </service>
+
+</services>

@@ -106,4 +106,68 @@
         <index name="AGI_PLDFCT_KV"><index-field name="facetKey"/><index-field name="facetValue"/></index>
     </entity>
 
+    <entity entity-name="AgiPipelineStep" package="org.moqui.ai.pipeline" enable-audit-log="true">
+        <description>
+            First-class compute step in an AGI Pipeline DAG.
+            Binds explicit ingress contracts (inputs) to egress artifacts (outputs).
+        </description>
+        
+        <field name="pipelineStepId" type="id" is-pk="true"/>
+        <field name="discussionId" type="id" not-null="true"/>
+        <field name="parentStepId" type="id">
+            <description>DAG predecessor pointer for branching and history</description>
+        </field>
+        
+        <field name="stepSequenceNum" type="number-integer"/>
+        <field name="stanceEnumId" type="id" not-null="true"/><!-- AamDiscuss, AamPlan, AamBuild -->
+        <field name="statusId" type="id" default="PlsDraft"/><!-- PlsDraft, PlsExecuting, PlsCommitted, PlsArchived -->
+        <field name="stepLabel" type="text-medium"/>
+
+        <!-- INGRESS CONTRACT (The [IN] Port) -->
+        <field name="ingressPayloadId" type="id">
+            <description>Pointer to AgiPayload consumed by this step</description>
+        </field>
+        <field name="directivePrompt" type="text-long">
+            <description>The user directive or transition prompt that triggered this step</description>
+        </field>
+
+        <!-- EGRESS CONTRACT (The [OUT] Port) -->
+        <field name="egressPayloadId" type="id">
+            <description>Pointer to AgiPayload produced by this step</description>
+        </field>
+        <field name="targetArtifactUri" type="text-medium">
+            <description>Target screen/service/entity file path</description>
+        </field>
+
+        <!-- Conversational Audit Anchor (Provenance Link to AgiMessage) -->
+        <field name="userMessageId" type="id"/>
+        <field name="assistantMessageId" type="id"/>
+
+        <field name="createdDate" type="date-time"/>
+        <field name="lastUpdatedDate" type="date-time"/>
+
+        <!-- Relationships -->
+        <relationship type="one" title="Discussion" related="org.moqui.ai.discussion.AgiDiscussion">
+            <key-map field-name="discussionId"/>
+        </relationship>
+        <relationship type="one" title="ParentStep" related="org.moqui.ai.pipeline.AgiPipelineStep">
+            <key-map field-name="parentStepId" related="pipelineStepId"/>
+        </relationship>
+        <relationship type="one" title="Stance" related="moqui.basic.Enumeration">
+            <key-map field-name="stanceEnumId" related="enumId"/>
+        </relationship>
+        <relationship type="one" title="Status" related="moqui.basic.StatusItem">
+            <key-map field-name="statusId" related="statusId"/>
+        </relationship>
+        <relationship type="one" title="IngressPayload" related="org.moqui.ai.payload.AgiPayload">
+            <key-map field-name="ingressPayloadId" related="agiPayloadId"/>
+        </relationship>
+        <relationship type="one" title="EgressPayload" related="org.moqui.ai.payload.AgiPayload">
+            <key-map field-name="egressPayloadId" related="agiPayloadId"/>
+        </relationship>
+
+        <index name="AGI_PSTEP_DISC"><index-field name="discussionId"/></index>
+        <index name="AGI_PSTEP_PARENT"><index-field name="parentStepId"/></index>
+    </entity>
+
 </entities>
