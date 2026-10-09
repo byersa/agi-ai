@@ -133,7 +133,6 @@ rawTools.each { tool ->
     // Build Native LlmTool Instance
     if (isServiceCallable) {
         try {
-            // LlmTool.service automatically extracts schema from ServiceDefinition
             nativeLlmTools.add(LlmTool.service(resolvedService, funcName))
         } catch (Exception se) {
             ec.logger.warn("⚠️ Could not bind typed ServiceCallTool for ${resolvedService}, using DynamicMcpTool fallback: ${se.message}")
@@ -147,7 +146,6 @@ rawTools.each { tool ->
             ))
         }
     } else if (isSyntheticPassthrough) {
-        // Synthetic passthrough tool adapter
         nativeLlmTools.add(new DynamicMcpTool(
             name: funcName,
             description: tool.description ?: funcName,
@@ -267,7 +265,8 @@ messages.add([ role: "user", content: userPromptBuilder.toString() ])
 // STEP 3: MULTI-TURN ORCHESTRATION LOOP (Side-Effect Aware)
 // =====================================================================================
 int currentTurn = 0
-int MAX_TURNS = currentMode == "plan" ? 5 : 8
+// Capped at 4 turns for build mode to prevent transaction timeouts and runaway exploration
+int MAX_TURNS = currentMode == "plan" ? 5 : (currentMode == "build" ? 4 : 8)
 String finalArtifactUri = null
 String finalMessage = ""
 boolean executionSuccess = false
@@ -293,7 +292,6 @@ try {
                     .tools(nativeLlmTools)
                     .maxIterations(MAX_TURNS)
 
-            // Only override if the caller explicitly passed a specific model override
             if (context.aiModelName) {
                 client.model(context.aiModelName)
             }
@@ -306,7 +304,6 @@ try {
                 }
             }
             long start = System.currentTimeMillis()
-            // LlmClient.call() automatically triggers LlmAgentLoop if tools are invoked
             def resp = client.user(userPromptBuilder.toString()).call()
             long duration = System.currentTimeMillis() - start
 
@@ -322,222 +319,255 @@ try {
 
     } else {
         // -----------------------------------------------------------------------------
-        // BRANCH B: 100% UNTOUCHED LEGACY HTTP & MULTI-TURN TOOL LOOP (plan, build, etc.)
+        // BRANCH B: MULTI-TURN TOOL LOOP (Plan & Build with Transaction Suspension)
         // -----------------------------------------------------------------------------
-        while (currentTurn < MAX_TURNS && !executionSuccess) {
-            currentTurn++
-            ec.logger.info("📡 [AGI PROXY LOOP] Starting Turn ${currentTurn} of ${MAX_TURNS} (Mode: ${currentMode}, Model: ${modelName})...")
+        boolean txSuspended = false
+        if (ec.transaction.isTransactionInPlace()) {
+            txSuspended = ec.transaction.suspend()
+        }
 
-            Map requestPayload = [
-                model      : modelName,
-                messages   : messages,
-                temperature: 0.2
-            ]
+        try {
+            while (currentTurn < MAX_TURNS && !executionSuccess) {
+                currentTurn++
+                ec.logger.info("📡 [AGI PROXY LOOP] Starting Turn ${currentTurn} of ${MAX_TURNS} (Mode: ${currentMode}, Model: ${modelName})...")
 
-            boolean hasArchetypesInHistory = messages.any { msg ->
-                msg.role == "tool" && (msg.name?.toLowerCase()?.contains("archetype") || msg.content?.contains("archetype"))
-            }
+                Map requestPayload = [
+                    model      : modelName,
+                    messages   : messages,
+                    temperature: 0.2
+                ]
 
-            if (currentMode == "plan") {
-                if (currentTurn == 1 && !hasArchetypesInHistory) {
-                    def discoveryTool = openAiTools.find { 
-                        String fn = (it.function?.name ?: "").toLowerCase()
-                        fn.contains("archetype") || fn.contains("screenarchetype") || fn.contains("layout")
+                boolean hasArchetypesInHistory = messages.any { msg ->
+                    msg.role == "tool" && (msg.name?.toLowerCase()?.contains("archetype") || msg.content?.contains("archetype"))
+                }
+
+                if (currentMode == "plan") {
+                    if (currentTurn == 1 && !hasArchetypesInHistory) {
+                        def discoveryTool = openAiTools.find { 
+                            String fn = (it.function?.name ?: "").toLowerCase()
+                            fn.contains("archetype") || fn.contains("screenarchetype") || fn.contains("layout")
+                        }
+                        if (discoveryTool) {
+                            ec.logger.warn("🎯 [PLAN TURN 1] Forcing tool execution: ${discoveryTool.function.name}")
+                            requestPayload.tools = [ discoveryTool ]
+                            requestPayload.tool_choice = [
+                                type: "function",
+                                function: [ name: discoveryTool.function.name ]
+                            ]
+                        }
+                    } else {
+                        ec.logger.info("🔒 [PLAN TURN ${currentTurn}] Locking tools; forcing JSON completion synthesis.")
+                        requestPayload.tools = null
+                        requestPayload.tool_choice = "none"
+                        requestPayload.response_format = [ type: "json_object" ]
                     }
-                    if (discoveryTool) {
-                        ec.logger.warn("🎯 [PLAN TURN 1] Forcing tool execution: ${discoveryTool.function.name}")
-                        requestPayload.tools = [ discoveryTool ]
-                        requestPayload.tool_choice = [
-                            type: "function",
-                            function: [ name: discoveryTool.function.name ]
-                        ]
+                } else if (currentMode == "build") {
+                    // Turn 1 & 2 allow template & archetype fetching; Turn 3+ locks tools to force AST JSON generation
+                    if (currentTurn >= 3) {
+                        ec.logger.info("🔒 [BUILD TURN ${currentTurn}] Locking tools; forcing AST JSON completion synthesis.")
+                        requestPayload.tools = null
+                        requestPayload.tool_choice = "none"
+                        requestPayload.response_format = [ type: "json_object" ]
+                        
+                        // Explicitly prompt for the astTree structure so the model does not emit an empty string
+                        messages.add([
+                            role: "user",
+                            content: """All necessary discovery is complete.
+Generate the complete screen definition as a JSON object containing the 'astTree' property.
+The 'astTree' must represent the full Moqui XML screen hierarchy (screen, require-authentication, subscreens, actions, widgets) for '${effectiveArtifactUri}'.
+Do NOT return raw XML text or markdown fences; return strictly the JSON object with 'astTree'."""
+                        ])
+                    } else {
+                        if (openAiTools.size() > 0) {
+                            requestPayload.tools = openAiTools
+                            requestPayload.tool_choice = "auto"
+                        }
                     }
                 } else {
-                    ec.logger.info("🔒 [PLAN TURN ${currentTurn}] Locking tools; forcing JSON completion synthesis.")
-                    requestPayload.tools = null
-                    requestPayload.tool_choice = "none"
-                    requestPayload.response_format = [ type: "json_object" ]
-                }
-            } else {
-                if (openAiTools.size() > 0) {
-                    requestPayload.tools = openAiTools
-                    requestPayload.tool_choice = "auto"
-                }
-            }
-
-            URL url = new URL(endpointUrl)
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
-            conn.setRequestMethod("POST")
-            conn.setRequestProperty("Content-Type", "application/json")
-            if (apiKey && apiKey != "ollama") {
-                conn.setRequestProperty("Authorization", "Bearer ${apiKey}")
-            }
-            conn.setConnectTimeout(60000)
-            conn.setReadTimeout(120000)
-            conn.setDoOutput(true)
-
-            String jsonPayload = JsonOutput.toJson(requestPayload)
-            conn.outputStream.withWriter("UTF-8") { writer -> writer.write(jsonPayload) }
-
-            int responseCode = conn.getResponseCode()
-            String rawResponseBody = (responseCode == 200 ? conn.inputStream : conn.errorStream)?.text ?: ""
-
-            if (responseCode != 200) {
-                ec.logger.error("❌ LLM API Call Failed (${responseCode}): ${rawResponseBody}")
-                context.completionText = JsonOutput.toJson([
-                    status: "error",
-                    error: "LLM API HTTP ${responseCode}: ${rawResponseBody}"
-                ])
-                context.status = "error"
-                return
-            }
-
-            Map apiResponse = new JsonSlurper().parseText(rawResponseBody)
-            def choice = apiResponse?.choices?[0]
-            def assistantMessage = choice?.message
-
-            if (!assistantMessage) {
-                ec.logger.error("❌ Empty message returned by LLM: ${rawResponseBody}")
-                context.completionText = JsonOutput.toJson([
-                    status: "error",
-                    error: "Empty message choice in response."
-                ])
-                context.status = "error"
-                return
-            }
-
-            messages.add(assistantMessage)
-            List toolCalls = assistantMessage.tool_calls ?: []
-
-            if (toolCalls.size() > 0) {
-                boolean turnHadErrors = false
-
-                for (def call in toolCalls) {
-                    String toolCallId = call.id ?: "call_${System.currentTimeMillis()}"
-                    String calledName = call.function?.name
-                    String rawArgsStr = call.function?.arguments ?: "{}"
-                    Map toolArgs = [:]
-                    
-                    try {
-                        toolArgs = new JsonSlurper().parseText(rawArgsStr) as Map
-                    } catch (Exception parseEx) {
-                        ec.logger.warn("⚠️ Could not parse tool arguments JSON: ${rawArgsStr}")
+                    if (openAiTools.size() > 0) {
+                        requestPayload.tools = openAiTools
+                        requestPayload.tool_choice = "auto"
                     }
+                }
 
-                    // Resilient Case-Insensitive Tool Resolution
-                    String normCalledName = normalizeToolName(calledName)
-                    def matchedTool = rawTools.find { t ->
-                        String tName = t.name ?: ""
-                        String sName = t.serviceCallName ?: ""
-                        String cmd = t.command ?: ""
-                        return normalizeToolName(tName) == normCalledName ||
-                               normalizeToolName(sName) == normCalledName ||
-                               normalizeToolName(cmd) == normCalledName ||
-                               (sName.contains("#") && normalizeToolName(sName.split("#")[1]) == normCalledName)
-                    }
+                URL url = new URL(endpointUrl)
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                conn.setRequestMethod("POST")
+                conn.setRequestProperty("Content-Type", "application/json")
+                if (apiKey && apiKey != "ollama") {
+                    conn.setRequestProperty("Authorization", "Bearer ${apiKey}")
+                }
+                conn.setConnectTimeout(60000)
+                conn.setReadTimeout(120000)
+                conn.setDoOutput(true)
 
-                    String serviceName = matchedTool?.serviceCallName ?: canonicalToolServiceMap[normCalledName]
+                String jsonPayload = JsonOutput.toJson(requestPayload)
+                conn.outputStream.withWriter("UTF-8") { writer -> writer.write(jsonPayload) }
 
-                    // Synthetic Handlers for read/validation operations without dedicated Moqui services
-                    if (!serviceName) {
-                        if (normCalledName.contains("validate")) {
-                            ec.logger.info("🛡️ [TOOL PASSTHROUGH] Auto-validating structure for tool '${calledName}'.")
+                int responseCode = conn.getResponseCode()
+                String rawResponseBody = (responseCode == 200 ? conn.inputStream : conn.errorStream)?.text ?: ""
+
+                if (responseCode != 200) {
+                    ec.logger.error("❌ LLM API Call Failed (${responseCode}): ${rawResponseBody}")
+                    context.completionText = JsonOutput.toJson([
+                        status: "error",
+                        error: "LLM API HTTP ${responseCode}: ${rawResponseBody}"
+                    ])
+                    context.status = "error"
+                    return
+                }
+
+                Map apiResponse = new JsonSlurper().parseText(rawResponseBody)
+                def choice = apiResponse?.choices?[0]
+                def assistantMessage = choice?.message
+
+                if (!assistantMessage) {
+                    ec.logger.error("❌ Empty message returned by LLM: ${rawResponseBody}")
+                    context.completionText = JsonOutput.toJson([
+                        status: "error",
+                        error: "Empty message choice in response."
+                    ])
+                    context.status = "error"
+                    return
+                }
+
+                messages.add(assistantMessage)
+                List toolCalls = assistantMessage.tool_calls ?: []
+
+                if (toolCalls.size() > 0 && currentTurn < MAX_TURNS) {
+                    boolean turnHadErrors = false
+
+                    for (def call in toolCalls) {
+                        String toolCallId = call.id ?: "call_${System.currentTimeMillis()}"
+                        String calledName = call.function?.name
+                        String rawArgsStr = call.function?.arguments ?: "{}"
+                        Map toolArgs = [:]
+                        
+                        try {
+                            toolArgs = new JsonSlurper().parseText(rawArgsStr) as Map
+                        } catch (Exception parseEx) {
+                            ec.logger.warn("⚠️ Could not parse tool arguments JSON: ${rawArgsStr}")
+                        }
+
+                        // Resilient Case-Insensitive Tool Resolution
+                        String normCalledName = normalizeToolName(calledName)
+                        def matchedTool = rawTools.find { t ->
+                            String tName = t.name ?: ""
+                            String sName = t.serviceCallName ?: ""
+                            String cmd = t.command ?: ""
+                            return normalizeToolName(tName) == normCalledName ||
+                                   normalizeToolName(sName) == normCalledName ||
+                                   normalizeToolName(cmd) == normCalledName ||
+                                   (sName.contains("#") && normalizeToolName(sName.split("#")[1]) == normCalledName)
+                        }
+
+                        String serviceName = matchedTool?.serviceCallName ?: canonicalToolServiceMap[normCalledName]
+
+                        // Synthetic Handlers for read/validation operations without dedicated Moqui services
+                        if (!serviceName) {
+                            if (normCalledName.contains("validate")) {
+                                ec.logger.info("🛡️ [TOOL PASSTHROUGH] Auto-validating structure for tool '${calledName}'.")
+                                messages.add([
+                                    role: "tool",
+                                    tool_call_id: toolCallId,
+                                    name: calledName,
+                                    content: JsonOutput.toJson([ isValid: true, status: "VALID", warnings: [] ])
+                                ])
+                                continue
+                            } else if (normCalledName.contains("rawxml") || normCalledName.contains("readfile")) {
+                                String fileLoc = toolArgs.artifactUri ?: toolArgs.location ?: toolArgs.path ?: artifactUri
+                                String fileText = ""
+                                try {
+                                    def rr = ec.resource.getLocationReference(fileLoc)
+                                    if (rr != null && rr.getExists()) fileText = rr.getText()
+                                } catch (Exception ignore) {}
+                                ec.logger.info("📄 [TOOL PASSTHROUGH] Read file contents for '${calledName}': ${fileLoc}")
+                                messages.add([
+                                    role: "tool",
+                                    tool_call_id: toolCallId,
+                                    name: calledName,
+                                    content: JsonOutput.toJson([ path: fileLoc, content: fileText ?: "<!-- Not found -->" ])
+                                ])
+                                continue
+                            } else if (normCalledName.contains("resourcelist") || normCalledName.contains("palette") 
+                                    || normCalledName.contains("toollist") || normCalledName.contains("tooldefinition") 
+                                    || normCalledName.contains("directory") || normCalledName.contains("filelist")) {
+                                ec.logger.info("📋 [TOOL PASSTHROUGH] Benign response for unmapped discovery tool '${calledName}'.")
+                                messages.add([
+                                    role: "tool",
+                                    tool_call_id: toolCallId,
+                                    name: calledName,
+                                    content: JsonOutput.toJson([ status: "success", items: [], message: "Discovery complete; proceed to synthesis." ])
+                                ])
+                                continue
+                            }
+                        }
+
+                        if (!serviceName) {
+                            ec.logger.error("❌ Could not resolve serviceCallName for tool: ${calledName}")
+                            turnHadErrors = true
                             messages.add([
                                 role: "tool",
                                 tool_call_id: toolCallId,
                                 name: calledName,
-                                content: JsonOutput.toJson([ isValid: true, status: "VALID", warnings: [] ])
-                            ])
-                            continue
-                        } else if (normCalledName.contains("rawxml") || normCalledName.contains("readfile")) {
-                            String fileLoc = toolArgs.artifactUri ?: toolArgs.location ?: toolArgs.path ?: artifactUri
-                            String fileText = ""
-                            try {
-                                def rr = ec.resource.getLocationReference(fileLoc)
-                                if (rr != null && rr.getExists()) fileText = rr.getText()
-                            } catch (Exception ignore) {}
-                            ec.logger.info("📄 [TOOL PASSTHROUGH] Read file contents for '${calledName}': ${fileLoc}")
-                            messages.add([
-                                role: "tool",
-                                tool_call_id: toolCallId,
-                                name: calledName,
-                                content: JsonOutput.toJson([ path: fileLoc, content: fileText ?: "<!-- Not found -->" ])
-                            ])
-                            continue
-                        } else if (normCalledName.contains("resourcelist") || normCalledName.contains("palette") 
-                                || normCalledName.contains("toollist") || normCalledName.contains("tooldefinition") 
-                                || normCalledName.contains("directory") || normCalledName.contains("filelist")) {
-                            ec.logger.info("📋 [TOOL PASSTHROUGH] Benign response for unmapped discovery tool '${calledName}'.")
-                            messages.add([
-                                role: "tool",
-                                tool_call_id: toolCallId,
-                                name: calledName,
-                                content: JsonOutput.toJson([ status: "success", items: [], message: "Discovery complete; proceed to synthesis." ])
+                                content: JsonOutput.toJson([ error: "Service not found for tool name ${calledName}" ])
                             ])
                             continue
                         }
+
+                        if (!toolArgs.targetComponent) toolArgs.targetComponent = targetComponent
+                        if (toolArgs.artifactUri) {
+                            toolArgs.artifactUri = cleanScreenUri(toolArgs.artifactUri.toString(), targetComponent)
+                        } else if (artifactUri) {
+                            toolArgs.artifactUri = cleanScreenUri(artifactUri, targetComponent)
+                        }
+
+                        ec.logger.info("🔧 [HARNESS CALL] Invoking ${serviceName} for tool '${calledName}' with: ${toolArgs}")
+                        Map toolResult = [:]
+
+                        try {
+                            ec.transaction.runRequireNew(0, "Executing isolated agent tool ${calledName}", {
+                                toolResult = ec.service.sync().name(serviceName).parameters(toolArgs).call()
+                            })
+                        } catch (Exception ex) {
+                            turnHadErrors = true
+                            ec.logger.warn("⚠️ Exception during tool execution: ${ex.message}", ex)
+                        }
+
+                        if (turnHadErrors || ec.message.hasError()) {
+                            String serviceErrors = ec.message.getErrorsString() ?: "Tool execution failed"
+                            ec.message.clearAll()
+                            messages.add([
+                                role: "tool",
+                                tool_call_id: toolCallId,
+                                name: calledName,
+                                content: JsonOutput.toJson([ status: "error", error: serviceErrors ])
+                            ])
+                        } else {
+                            if (toolResult?.artifactUri) finalArtifactUri = cleanScreenUri(toolResult.artifactUri.toString(), targetComponent)
+                            if (toolResult?.targetArtifactUri) finalArtifactUri = cleanScreenUri(toolResult.targetArtifactUri.toString(), targetComponent)
+
+                            ec.logger.info("✅ [TOOL SUCCESS - Turn ${currentTurn}] ${serviceName} returned results.")
+                            messages.add([
+                                role: "tool",
+                                tool_call_id: toolCallId,
+                                name: calledName,
+                                content: JsonOutput.toJson([ status: "success", result: toolResult ?: [:] ])
+                            ])
+                        }
                     }
 
-                    if (!serviceName) {
-                        ec.logger.error("❌ Could not resolve serviceCallName for tool: ${calledName}")
-                        turnHadErrors = true
-                        messages.add([
-                            role: "tool",
-                            tool_call_id: toolCallId,
-                            name: calledName,
-                            content: JsonOutput.toJson([ error: "Service not found for tool name ${calledName}" ])
-                        ])
-                        continue
-                    }
+                    ec.logger.info("🔄 [CONTINUING MULTI-TURN] Turn ${currentTurn} tool execution complete. Requesting final synthesis from model...")
 
-                    if (!toolArgs.targetComponent) toolArgs.targetComponent = targetComponent
-                    if (toolArgs.artifactUri) {
-                        toolArgs.artifactUri = cleanScreenUri(toolArgs.artifactUri.toString(), targetComponent)
-                    } else if (artifactUri) {
-                        toolArgs.artifactUri = cleanScreenUri(artifactUri, targetComponent)
-                    }
-
-                    ec.logger.info("🔧 [HARNESS CALL] Invoking ${serviceName} for tool '${calledName}' with: ${toolArgs}")
-                    Map toolResult = [:]
-
-                    try {
-                        ec.transaction.runRequireNew(0, "Executing isolated agent tool ${calledName}", {
-                            toolResult = ec.service.sync().name(serviceName).parameters(toolArgs).call()
-                        })
-                    } catch (Exception ex) {
-                        turnHadErrors = true
-                        ec.logger.warn("⚠️ Exception during tool execution: ${ex.message}", ex)
-                    }
-
-                    if (turnHadErrors || ec.message.hasError()) {
-                        String serviceErrors = ec.message.getErrorsString() ?: "Tool execution failed"
-                        ec.message.clearAll()
-                        messages.add([
-                            role: "tool",
-                            tool_call_id: toolCallId,
-                            name: calledName,
-                            content: JsonOutput.toJson([ status: "error", error: serviceErrors ])
-                        ])
-                    } else {
-                        if (toolResult?.artifactUri) finalArtifactUri = cleanScreenUri(toolResult.artifactUri.toString(), targetComponent)
-                        if (toolResult?.targetArtifactUri) finalArtifactUri = cleanScreenUri(toolResult.targetArtifactUri.toString(), targetComponent)
-
-                        ec.logger.info("✅ [TOOL SUCCESS - Turn ${currentTurn}] ${serviceName} returned results.")
-                        messages.add([
-                            role: "tool",
-                            tool_call_id: toolCallId,
-                            name: calledName,
-                            content: JsonOutput.toJson([ status: "success", result: toolResult ?: [:] ])
-                        ])
-                    }
+                } else {
+                    finalMessage = assistantMessage.content ?: ""
+                    ec.logger.info("🏁 [SYNTHESIS COMPLETE - Turn ${currentTurn}] Content length: ${finalMessage.length()} chars")
+                    executionSuccess = true
                 }
-
-                ec.logger.info("🔄 [CONTINUING MULTI-TURN] Turn ${currentTurn} tool execution complete. Requesting final synthesis from model...")
-
-            } else {
-                finalMessage = assistantMessage.content ?: ""
-                ec.logger.info("🏁 [SYNTHESIS COMPLETE - Turn ${currentTurn}] Content length: ${finalMessage.length()} chars")
-                executionSuccess = true
+            }
+        } finally {
+            if (txSuspended) {
+                ec.transaction.resume()
             }
         }
     }

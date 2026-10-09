@@ -1221,51 +1221,51 @@
                                 ])
                             }
                         }
-                    } else {
-                        // 2B. FALLBACK TO LEGACY DISCUSSION MESSAGES
-                        def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
-                            .condition("discussionId", discussionId)
-                        if (!showArchived) msgFind.condition("statusId", "not-equals", "AmsArchived")
-                        def allMsgs = msgFind.orderBy("entryDate").list()
-
-                        allMsgs.each { m ->
-                            String mId = m.messageId as String
-                            def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
-                                .condition("messageId", mId)
-                                .orderBy("contentSeqId")
-                                .list()
-                            def titledContent = contents?.find { it.title != null && !it.title.toString().trim().isEmpty() }
-                            String title = titledContent?.title
-                            String body = contents ? contents*.bodyText.join("\n\n") : ""
-
-                            String actionType = m.stagedPayloadId ? "plan" : (m.targetArtifactUri?.endsWith(".xml") ? "build" : "discuss")
-
-                            nodes.add([
-                                stageId              : mId,
-                                parentStageId        : m.parentMessageId,
-                                discussionId         : m.discussionId,
-                                actionType           : actionType,
-                                role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
-                                label                : title ?: (body ? body.take(35) + "..." : "Turn #" + mId),
-                                fullText             : body,
-                                targetArtifactUri    : m.targetArtifactUri,
-                                stagedPayloadId      : m.stagedPayloadId,
-                                ingressPayloadId     : m.stagedPayloadId,
-                                egressPayloadId      : m.stagedPayloadId,
-                                statusId             : m.statusId,
-                                isArchived           : (m.statusId == "AmsArchived"),
-                                entryDate            : m.entryDate?.toString()
-                            ])
-
-                            if (m.parentMessageId) {
-                                edges.add([
-                                    edgeId : "${m.parentMessageId}->${mId}",
-                                    from   : m.parentMessageId as String,
-                                    to     : mId,
-                                    label  : "feeds"
-                                ])
-                            }
-                        }
+//                    } else {
+//                        // 2B. FALLBACK TO LEGACY DISCUSSION MESSAGES
+//                        def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+//                            .condition("discussionId", discussionId)
+//                        if (!showArchived) msgFind.condition("statusId", "not-equals", "AmsArchived")
+//                        def allMsgs = msgFind.orderBy("entryDate").list()
+//
+//                        allMsgs.each { m ->
+//                            String mId = m.messageId as String
+//                            def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
+//                                .condition("messageId", mId)
+//                                .orderBy("contentSeqId")
+//                                .list()
+//                            def titledContent = contents?.find { it.title != null && !it.title.toString().trim().isEmpty() }
+//                            String title = titledContent?.title
+//                            String body = contents ? contents*.bodyText.join("\n\n") : ""
+//
+//                            String actionType = m.stagedPayloadId ? "plan" : (m.targetArtifactUri?.endsWith(".xml") ? "build" : "discuss")
+//
+//                            nodes.add([
+//                                stageId              : mId,
+//                                parentStageId        : m.parentMessageId,
+//                                discussionId         : m.discussionId,
+//                                actionType           : actionType,
+//                                role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
+//                                label                : title ?: (body ? body.take(35) + "..." : "Turn #" + mId),
+//                                fullText             : body,
+//                                targetArtifactUri    : m.targetArtifactUri,
+//                                stagedPayloadId      : m.stagedPayloadId,
+//                                ingressPayloadId     : m.stagedPayloadId,
+//                                egressPayloadId      : m.stagedPayloadId,
+//                                statusId             : m.statusId,
+//                                isArchived           : (m.statusId == "AmsArchived"),
+//                                entryDate            : m.entryDate?.toString()
+//                            ])
+//
+//                            if (m.parentMessageId) {
+//                                edges.add([
+//                                    edgeId : "${m.parentMessageId}->${mId}",
+//                                    from   : m.parentMessageId as String,
+//                                    to     : mId,
+//                                    label  : "feeds"
+//                                ])
+//                            }
+//                        }
                     }
                 }
 
