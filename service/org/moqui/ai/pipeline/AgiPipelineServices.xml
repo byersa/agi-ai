@@ -208,22 +208,21 @@
                         if (agentText.trim().startsWith("{") && agentText.trim().endsWith("}")) {
                             def parsed = new groovy.json.JsonSlurper().parseText(agentText) as Map
                             if (parsed.astTree && !parsed.rawXmlContent) {
-                                ec.logger.info("⚙️ [recordAndDispatch#PipelineStep] Compiling received astTree to XML via AgiWorkspaceServices.tree#ToXml...")
+                                ec.logger.info("⚙️ [recordAndDispatch#PipelineStep] Compiling received astTree to XML via AgiIdeServices.compile#TreeToXml...")
                                 Map toXmlResult = ec.service.sync()
-                                    .name("org.moqui.ide.AgiWorkspaceServices.tree#ToXml")
+                                    .name("org.moqui.ide.AgiIdeServices.compile#TreeToXml")
                                     .parameters([
-                                        layoutTree : parsed.astTree,
-                                        artifactUri: newStep.targetArtifactUri
+                                        layoutTree: parsed.astTree
                                     ])
                                     .call()
 
-                                if (toXmlResult?.xmlContent) {
-                                    String compiledXml = toXmlResult.xmlContent
+                                String compiledXml = toXmlResult?.xmlText
+                                if (compiledXml && compiledXml.trim()) {
                                     parsed.rawXmlContent = compiledXml
                                     agentText = groovy.json.JsonOutput.toJson(parsed)
                                     ec.logger.info("📄 [recordAndDispatch#PipelineStep] Compiled astTree to ${compiledXml.length()} chars of XML.")
                                 } else {
-                                    ec.logger.warn("⚠️ [recordAndDispatch#PipelineStep] AgiWorkspaceServices.tree#ToXml returned no xmlContent.")
+                                    ec.logger.warn("⚠️ [recordAndDispatch#PipelineStep] AgiIdeServices.compile#TreeToXml returned empty xmlText.")
                                 }
                             }
                         }

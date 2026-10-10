@@ -49,21 +49,73 @@ def stripMarkdownFences = { String text ->
     return t.trim()
 }
 
-// Helper: Normalize string for resilient tool resolution
+// Helper: Normalize string for resilient tool lookup
 def normalizeToolName = { String n ->
     if (!n) return ""
     return n.replaceAll("[^a-zA-Z0-9]", "").toLowerCase().trim()
 }
 
-// Known tool-to-service mapping table for canonical MCP tools
-Map<String, String> canonicalToolServiceMap = [
-    "get_screen_archetype_list" : "org.moqui.ai.mcp.AgiMcpServices.get#ScreenArchetypeList",
-    "getscreenarchetypelist"    : "org.moqui.ai.mcp.AgiMcpServices.get#ScreenArchetypeList",
-    "moqui_search_screens"      : "org.moqui.ai.mcp.AgiMcpServices.search#Screens",
-    "moquisearchscreens"        : "org.moqui.ai.mcp.AgiMcpServices.search#Screens",
-    "search_screens"            : "org.moqui.ai.mcp.AgiMcpServices.search#Screens",
-    "searchscreens"             : "org.moqui.ai.mcp.AgiMcpServices.search#Screens"
-]
+// =====================================================================================
+// DYNAMIC CONVENTION-BASED SERVICE RESOLVER (No hardcoded service dictionaries)
+// =====================================================================================
+def resolveServiceForTool = { String toolName, Map toolSpec, ExecutionContext ctx ->
+    // Tier 1: Check if the tool metadata already declared an explicit service name
+    String explicit = toolSpec?.serviceCallName ?: toolSpec?.serviceName
+    if (explicit) {
+        try {
+            if (ctx.service.getServiceDefinition(explicit) != null) return explicit
+        } catch (Exception ignore) {}
+    }
+
+    if (!toolName) return null
+
+    // Tier 2: Derive verb#Noun from snake_case convention (e.g. get_screen_archetype_list -> get#ScreenArchetypeList)
+    String cleanName = toolName.replaceAll("[^a-zA-Z0-9_#]", "")
+    String verb = ""
+    String noun = ""
+
+    if (cleanName.contains("#")) {
+        def parts = cleanName.split("#")
+        verb = parts[0]
+        noun = parts[1]
+    } else if (cleanName.contains("_")) {
+        def parts = cleanName.split("_")
+        verb = parts[0]
+        noun = parts[1..-1].collect { it.capitalize() }.join("")
+    }
+
+    if (!verb || !noun) return null
+    String simpleServiceName = "${verb}#${noun}"
+
+    // Tier 3: Search standard AGI/MCP and IDE service namespaces
+    List candidatePackages = [
+        "org.moqui.ai.mcp.LayoutServices",
+        "org.moqui.ai.mcp.ScreenValidationTools",
+        "org.moqui.ai.mcp.McpScreenServices",
+        "org.moqui.ai.mcp.McpArtifactServices",
+        "org.moqui.ai.mcp.McpToolServices",
+        "org.moqui.ide.AgiWorkspaceServices",
+        "org.moqui.ai.pipeline.AgiPipelineServices"
+    ]
+
+    for (String pkg in candidatePackages) {
+        String fqcn = "${pkg}.${simpleServiceName}"
+        try {
+            if (ctx.service.getServiceDefinition(fqcn) != null) {
+                return fqcn
+            }
+        } catch (Exception ignore) {}
+    }
+
+    // Tier 4: Direct simple verb#noun check in service register
+    try {
+        if (ctx.service.getServiceDefinition(simpleServiceName) != null) {
+            return simpleServiceName
+        }
+    } catch (Exception ignore) {}
+
+    return null
+}
 
 // =====================================================================================
 // PHASE 2: DYNAMIC MCP TOOL ADAPTER CLASS
@@ -100,7 +152,7 @@ try {
 List rawTools = toolsResult.tools ?: toolsResult.toolsList ?: []
 
 List<LlmTool> nativeLlmTools = []
-List openAiTools = [] // Kept for legacy Branch B compatibility
+List openAiTools = []
 
 rawTools.each { tool ->
     boolean isReadOnly = (tool.readOnly == true || tool.readOnly == "true" || tool.isReadOnly == true || tool.isReadOnly == "true")
@@ -111,17 +163,11 @@ rawTools.each { tool ->
 
     String funcName = tool.name ?: tool.command?.replace("/", "")?.replace("-", "_")
     String normName = normalizeToolName(funcName)
-    String resolvedService = tool.serviceCallName ?: canonicalToolServiceMap[normName]
     boolean isSyntheticPassthrough = normName.contains("validate") || normName.contains("rawxml") || normName.contains("resourcelist") || normName.contains("palette") || normName.contains("toollist")
     
-    boolean isServiceCallable = false
-    if (resolvedService) {
-        try {
-            isServiceCallable = (ec.service.isRegisteredService(resolvedService) || ec.service.getServiceDefinition(resolvedService) != null)
-        } catch (Exception ignore) {
-            isServiceCallable = false
-        }
-    }
+    // Dynamically resolve service definition without hardcoded maps
+    String resolvedService = resolveServiceForTool(funcName, tool, ec)
+    boolean isServiceCallable = (resolvedService != null)
 
     if (!isSyntheticPassthrough && !isServiceCallable) {
         ec.logger.warn("⚠️ [TOOL FILTER] Suppressing tool spec '${funcName}' - no registered service found.")
@@ -167,7 +213,7 @@ rawTools.each { tool ->
         ))
     }
 
-    // Build legacy openAiTools map for Branch B fallback
+    // Build legacy openAiTools map for Branch B
     Map properties = [:]
     if (tool.inputSchema?.properties) {
         tool.inputSchema.properties.each { pKey, pVal ->
@@ -191,14 +237,19 @@ rawTools.each { tool ->
     ])
 }
 
-// Ensure get_ScreenArchetypeList is present in both native and legacy tool collections
+// Fallback injection for archetypes if not discovered dynamically
 if (!nativeLlmTools.any { it.name.toLowerCase().contains("archetype") }) {
-    nativeLlmTools.add(LlmTool.service("org.moqui.ai.mcp.AgiMcpServices.get#ScreenArchetypeList", "get_ScreenArchetypeList"))
+    String archService = resolveServiceForTool("get_screen_archetype_list", null, ec) ?: "org.moqui.ai.mcp.LayoutServices.get#ScreenArchetypeList"
+    try {
+        nativeLlmTools.add(LlmTool.service(archService, "get_ScreenArchetypeList"))
+    } catch (Exception ignore) {}
 }
+
 if (!openAiTools.any { it.function?.name?.toLowerCase()?.contains("archetype") }) {
+    String archService = resolveServiceForTool("get_screen_archetype_list", null, ec) ?: "org.moqui.ai.mcp.LayoutServices.get#ScreenArchetypeList"
     rawTools.add([
         name: "get_ScreenArchetypeList",
-        serviceCallName: "org.moqui.ai.mcp.AgiMcpServices.get#ScreenArchetypeList",
+        serviceCallName: archService,
         readOnly: true
     ])
     openAiTools.add([
@@ -265,7 +316,6 @@ messages.add([ role: "user", content: userPromptBuilder.toString() ])
 // STEP 3: MULTI-TURN ORCHESTRATION LOOP (Side-Effect Aware)
 // =====================================================================================
 int currentTurn = 0
-// Capped at 4 turns for build mode to prevent transaction timeouts and runaway exploration
 int MAX_TURNS = currentMode == "plan" ? 5 : (currentMode == "build" ? 4 : 8)
 String finalArtifactUri = null
 String finalMessage = ""
@@ -273,14 +323,13 @@ boolean executionSuccess = false
 
 try {
     // ---------------------------------------------------------------------------------
-    // BRANCH A: NATIVE ec.llm + LlmAgentLoop FOR DISCUSS MODE (Supports Tools & Text)
+    // BRANCH A: NATIVE ec.llm + LlmAgentLoop FOR DISCUSS MODE
     // ---------------------------------------------------------------------------------
     if (currentMode == "discuss") {
         ec.logger.info("🚀 [EC.LLM DISCUSS] Routing discuss mode through native LlmFacade (Tools registered: ${nativeLlmTools.size()})...")
 
         String targetProfile = context.aiProfileName ?: (modelName.contains("gemini") ? "gemini" : "ollama")
         
-        def suspendedTx = null
         boolean txSuspended = false
         if (ec.transaction.isTransactionInPlace()) {
             txSuspended = ec.transaction.suspend()
@@ -362,21 +411,11 @@ try {
                         requestPayload.response_format = [ type: "json_object" ]
                     }
                 } else if (currentMode == "build") {
-                    // Turn 1 & 2 allow template & archetype fetching; Turn 3+ locks tools to force AST JSON generation
                     if (currentTurn >= 3) {
-                        ec.logger.info("🔒 [BUILD TURN ${currentTurn}] Locking tools; forcing AST JSON completion synthesis.")
+                        ec.logger.info("🔒 [BUILD TURN ${currentTurn}] Locking tools; enforcing JSON astTree synthesis.")
                         requestPayload.tools = null
                         requestPayload.tool_choice = "none"
                         requestPayload.response_format = [ type: "json_object" ]
-                        
-                        // Explicitly prompt for the astTree structure so the model does not emit an empty string
-                        messages.add([
-                            role: "user",
-                            content: """All necessary discovery is complete.
-Generate the complete screen definition as a JSON object containing the 'astTree' property.
-The 'astTree' must represent the full Moqui XML screen hierarchy (screen, require-authentication, subscreens, actions, widgets) for '${effectiveArtifactUri}'.
-Do NOT return raw XML text or markdown fences; return strictly the JSON object with 'astTree'."""
-                        ])
                     } else {
                         if (openAiTools.size() > 0) {
                             requestPayload.tools = openAiTools
@@ -449,7 +488,6 @@ Do NOT return raw XML text or markdown fences; return strictly the JSON object w
                             ec.logger.warn("⚠️ Could not parse tool arguments JSON: ${rawArgsStr}")
                         }
 
-                        // Resilient Case-Insensitive Tool Resolution
                         String normCalledName = normalizeToolName(calledName)
                         def matchedTool = rawTools.find { t ->
                             String tName = t.name ?: ""
@@ -461,7 +499,7 @@ Do NOT return raw XML text or markdown fences; return strictly the JSON object w
                                    (sName.contains("#") && normalizeToolName(sName.split("#")[1]) == normCalledName)
                         }
 
-                        String serviceName = matchedTool?.serviceCallName ?: canonicalToolServiceMap[normCalledName]
+                        String serviceName = matchedTool?.serviceCallName ?: resolveServiceForTool(calledName, matchedTool, ec)
 
                         // Synthetic Handlers for read/validation operations without dedicated Moqui services
                         if (!serviceName) {
@@ -555,6 +593,18 @@ Do NOT return raw XML text or markdown fences; return strictly the JSON object w
                                 content: JsonOutput.toJson([ status: "success", result: toolResult ?: [:] ])
                             ])
                         }
+                    }
+
+                    // Append user directive immediately following tool outputs when preparing to lock tools
+                    if (currentMode == "build" && currentTurn >= 2) {
+                        ec.logger.info("📝 [PROMPT INJECTION] Injecting explicit astTree synthesis directive following tool responses...")
+                        messages.add([
+                            role: "user",
+                            content: """All necessary discovery is complete.
+Now output the complete screen definition as a valid JSON object containing the 'astTree' property.
+The 'astTree' must represent the full Moqui XML screen hierarchy (screen, require-authentication, subscreens, actions, widgets) for '${effectiveArtifactUri}'.
+Do NOT call any additional tools. Return strictly the JSON object containing 'astTree'."""
+                        ])
                     }
 
                     ec.logger.info("🔄 [CONTINUING MULTI-TURN] Turn ${currentTurn} tool execution complete. Requesting final synthesis from model...")
