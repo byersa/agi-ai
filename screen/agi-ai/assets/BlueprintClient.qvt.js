@@ -5,6 +5,30 @@
     // 1. Initialize the global dictionary container if it doesn't exist
     window.AgiComponents = window.AgiComponents || {};
 
+    // 🛡️ Pass-through components with a concrete root element
+    window.AgiComponents['m-render-mode'] = {
+        name: 'MRenderMode',
+        inheritAttrs: false,
+        render() {
+            return Vue.h('div', { class: 'full-width' }, this.$slots.default ? this.$slots.default() : []);
+        }
+    };
+    window.AgiComponents['render-mode'] = window.AgiComponents['m-render-mode'];
+
+    window.AgiComponents['m-text'] = {
+        name: 'MText',
+        inheritAttrs: false,
+        props: ['value', 'attributes'],
+        render() {
+            const content = this.value || (this.attributes && this.attributes.value) || '';
+            return Vue.h('div', { class: 'full-width', innerHTML: content });
+        }
+    };
+
+    if (window.AgiComponents['text']) {
+        delete window.AgiComponents['text'];
+    }
+
     window.AgiComponents['BlueprintRenderer'] = {
         name: 'BlueprintRenderer',
         props: ['blueprint'],
@@ -409,11 +433,30 @@
             if (CustomComp && typeof CustomComp !== 'string') {
                 let propsMap = withSelection({ ...rawAttrs });
                 if (activeNode.id) propsMap.id = activeNode.id;
+                if (activeNode.value !== undefined && propsMap.value === undefined) propsMap.value = activeNode.value;
+
+                // 🛡️ Fix for m-link: Ensure 'href' prop is always satisfied when Moqui outputs 'url'
+                if (explicitType === 'm-link' || tag === 'm-link' || tag === 'link') {
+                    const destUrl = activeNode.url || activeNode.href || rawAttrs.url || rawAttrs.href || '#';
+                    propsMap.href = destUrl;
+                    propsMap.url = destUrl;
+                    if (activeNode.text || rawAttrs.text) propsMap.text = activeNode.text || rawAttrs.text;
+                }
+
                 return Vue.h(CustomComp, propsMap, { default: renderChildren });
             }
 
             // 4. STANDARD SEMANTIC MOQUI AST MAPPING
             switch (tag) {
+                case 'render-mode':
+                case 'm-render-mode':
+                    return Vue.h('div', withSelection({}, 'full-width'), renderChildren());
+
+                case 'text':
+                case 'm-text':
+                    const rawVal = activeNode.value || rawAttrs.value || '';
+                    return Vue.h('div', withSelection({ innerHTML: rawVal }, 'full-width'));
+
                 case 'screen':
                 case 'widgets':
                     return Vue.h('div', withSelection({}, 'blueprint-widgets-root full-width column q-gutter-y-md'), renderChildren());
@@ -459,8 +502,11 @@
 
                 case 'link':
                 case 'm-link':
+                    const destUrl = activeNode.url || activeNode.href || rawAttrs.url || rawAttrs.href || '#';
                     return Vue.h(Vue.resolveComponent('q-btn'), withSelection({
                         label: activeNode.text || rawAttrs.text || 'Link',
+                        href: destUrl,
+                        to: destUrl.startsWith('/') ? destUrl : undefined,
                         dense: true,
                         flat: true,
                         size: 'sm',
@@ -531,14 +577,32 @@
 
                 case 'container':
                 case 'div':
+                    const containerStyle = activeNode.style || rawAttrs.style || '';
+                    const isCssClassString = containerStyle && (containerStyle.includes('row') || containerStyle.includes('items-') || containerStyle.includes('col') || containerStyle.includes('bg-') || containerStyle.includes('text-'));
+                    const containerClass = [
+                        isCssClassString ? containerStyle : 'moqui-container',
+                        activeNode.class || rawAttrs.class || '',
+                        isCssClassString ? '' : 'q-pa-xs'
+                    ].filter(Boolean).join(' ');
+
                     return Vue.h('div', withSelection({
-                        style: rawAttrs.style || ''
-                    }, 'moqui-container q-pa-xs'), renderChildren());
+                        class: containerClass,
+                        style: isCssClassString ? (activeNode['style-extra'] || rawAttrs['style-extra'] || '') : containerStyle
+                    }), renderChildren());
 
                 case 'label':
                 case 'span':
-                    return Vue.h('div', withSelection({}, rawAttrs.style || 'text-body2 text-grey-9'),
-                        rawAttrs.text || (childNodes[0] && typeof childNodes[0] === 'string' ? childNodes[0] : ''));
+                    const labelStyle = activeNode.style || rawAttrs.style || '';
+                    const isLabelClassString = labelStyle && (labelStyle.includes('text-') || labelStyle.includes('font-') || labelStyle.includes('bg-') || labelStyle.includes('q-'));
+                    const labelClass = [
+                        isLabelClassString ? labelStyle : 'text-body2',
+                        activeNode.class || rawAttrs.class || ''
+                    ].filter(Boolean).join(' ');
+
+                    return Vue.h('div', withSelection({
+                        class: labelClass,
+                        style: isLabelClassString ? (activeNode['style-extra'] || rawAttrs['style-extra'] || '') : labelStyle
+                    }), rawAttrs.text || activeNode.text || (childNodes[0] && typeof childNodes[0] === 'string' ? childNodes[0] : ''));
 
                 default:
                     return Vue.h('div', withSelection({
