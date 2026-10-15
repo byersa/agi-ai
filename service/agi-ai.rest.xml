@@ -134,5 +134,10 @@
                 </method>
             </resource>
         </resource>
+        <resource name="orchestrate">
+            <method type="post">
+                <service name="org.moqui.ai.pipeline.AgiPipelineServices.orchestrate#Module"/>
+            </method>
+        </resource>
     </resource>
 </resource>

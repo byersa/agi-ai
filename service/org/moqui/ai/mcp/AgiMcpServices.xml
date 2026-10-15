@@ -47,4 +47,49 @@
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- WORKSPACE / LIST FILES (Inspection Tool for Agent Planning)           -->
+    <!-- ===================================================================== -->
+    <service verb="list" noun="WorkspaceFiles" type="inline" authenticate="anonymous-all">
+        <description>Lists files and directories under a target component or workspace path to inspect existing screens, services, or entities.</description>
+        <in-parameters>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+            <parameter name="path" default-value="screen"/>
+            <parameter name="extension"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="files" type="List"/>
+            <parameter name="baseLocation"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.resource.ResourceReference
+
+                List results = []
+                String searchLoc = path ? (path.startsWith("component://") ? path : "component://${targetComponent}/${path}") : "component://${targetComponent}/screen"
+
+                try {
+                    ResourceReference dirRef = ec.resource.getLocationReference(searchLoc)
+                    if (dirRef != null && dirRef.getExists() && dirRef.isDirectory()) {
+                        dirRef.directoryEntries.each { entry ->
+                            boolean matchesExt = !extension || entry.fileName.endsWith(extension.startsWith(".") ? extension : ".${extension}")
+                            if (matchesExt) {
+                                results.add([
+                                    name: entry.fileName,
+                                    path: entry.location,
+                                    isDirectory: entry.isDirectory()
+                                ])
+                            }
+                        }
+                    }
+                } catch (Exception ex) {
+                    ec.logger.warn("⚠️ [workspace#ListFiles] Could not list entries at ${searchLoc}: ${ex.message}")
+                }
+
+                context.files = results
+                context.baseLocation = searchLoc
+                ec.logger.info("📁 [workspace#ListFiles] Discovered ${results.size()} entries at ${searchLoc}")
+            ]]></script>
+        </actions>
+    </service>
 </services>

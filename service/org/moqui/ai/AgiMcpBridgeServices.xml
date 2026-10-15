@@ -14,6 +14,7 @@
             <script><![CDATA[
                 import org.moqui.impl.util.RestSchemaUtil
 
+                ec.logger.info("In AgiMcpBridgeServices.list#Tools - top")
                 Map toolMap = [:]
 
                 // 1. DIRECT SERVICE INSPECTION FOR org.moqui.ai.mcp.* SERVICES

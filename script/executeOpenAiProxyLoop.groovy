@@ -17,7 +17,7 @@ String currentMode = (context.mode ?: "build").toLowerCase().trim()
 String userPrompt = context.userPrompt
 String activeRagContext = context.activeRagContext ?: ""
 String targetComponent = context.targetComponent ?: "nursinghome"
-String artifactUri = context.focusCoordinate ?: context.activeArtifactLocation ?: ""
+String artifactUri = context.targetArtifactUri ?: context.artifactUri ?: context.focusCoordinate ?: context.activeArtifactLocation ?: ""
 String targetNodeId = context.targetMariaId ?: context.focusCoordinate ?: "root"
 String userId = ec.user.getUserId() ?: "system_ide_user"
 
@@ -32,6 +32,9 @@ ec.logger.info("🔍 [PROXY LOOP INIT] mode: ${currentMode}, model: ${modelName}
 def cleanScreenUri = { String rawUri, String comp ->
     if (!rawUri) return ""
     String cleaned = rawUri.replace("component://", "")
+    if (cleaned.contains("runtime/component/")) {
+        cleaned = cleaned.substring(cleaned.indexOf("runtime/component/") + "runtime/component/".length())
+    }
     while (cleaned.contains("screen/screen/")) {
         cleaned = cleaned.replace("screen/screen/", "screen/")
     }
@@ -59,7 +62,6 @@ def normalizeToolName = { String n ->
 // DYNAMIC CONVENTION-BASED SERVICE RESOLVER (No hardcoded service dictionaries)
 // =====================================================================================
 def resolveServiceForTool = { String toolName, Map toolSpec, ExecutionContext ctx ->
-    // Tier 1: Check if the tool metadata already declared an explicit service name
     String explicit = toolSpec?.serviceCallName ?: toolSpec?.serviceName
     if (explicit) {
         try {
@@ -69,7 +71,6 @@ def resolveServiceForTool = { String toolName, Map toolSpec, ExecutionContext ct
 
     if (!toolName) return null
 
-    // Tier 2: Derive verb#Noun from snake_case convention (e.g. get_screen_archetype_list -> get#ScreenArchetypeList)
     String cleanName = toolName.replaceAll("[^a-zA-Z0-9_#]", "")
     String verb = ""
     String noun = ""
@@ -87,8 +88,8 @@ def resolveServiceForTool = { String toolName, Map toolSpec, ExecutionContext ct
     if (!verb || !noun) return null
     String simpleServiceName = "${verb}#${noun}"
 
-    // Tier 3: Search standard AGI/MCP and IDE service namespaces
     List candidatePackages = [
+        "org.moqui.ai.mcp.AgiMcpServices",
         "org.moqui.ai.mcp.LayoutServices",
         "org.moqui.ai.mcp.ScreenValidationTools",
         "org.moqui.ai.mcp.McpScreenServices",
@@ -107,7 +108,6 @@ def resolveServiceForTool = { String toolName, Map toolSpec, ExecutionContext ct
         } catch (Exception ignore) {}
     }
 
-    // Tier 4: Direct simple verb#noun check in service register
     try {
         if (ctx.service.getServiceDefinition(simpleServiceName) != null) {
             return simpleServiceName
@@ -165,7 +165,6 @@ rawTools.each { tool ->
     String normName = normalizeToolName(funcName)
     boolean isSyntheticPassthrough = normName.contains("validate") || normName.contains("rawxml") || normName.contains("resourcelist") || normName.contains("palette") || normName.contains("toollist")
     
-    // Dynamically resolve service definition without hardcoded maps
     String resolvedService = resolveServiceForTool(funcName, tool, ec)
     boolean isServiceCallable = (resolvedService != null)
 
@@ -176,7 +175,6 @@ rawTools.each { tool ->
 
     if (resolvedService) tool.serviceCallName = resolvedService
 
-    // Build Native LlmTool Instance
     if (isServiceCallable) {
         try {
             nativeLlmTools.add(LlmTool.service(resolvedService, funcName))
@@ -213,16 +211,17 @@ rawTools.each { tool ->
         ))
     }
 
-    // Build legacy openAiTools map for Branch B
     Map properties = [:]
     if (tool.inputSchema?.properties) {
         tool.inputSchema.properties.each { pKey, pVal ->
-            if (pVal.internal == true) return
-            String explicitType = (pVal.type ?: "string").toLowerCase()
-            Map propMap = [type: explicitType, description: pVal.description ?: ""]
-            if (explicitType == "object" && pVal.properties) propMap.properties = pVal.properties
-            else if (explicitType == "array" && pVal.items) propMap.items = pVal.items
-            properties[pKey] = propMap
+            if (pVal instanceof Map) {
+                if (pVal.internal == true) return
+                String explicitType = (pVal.type ?: "string").toLowerCase()
+                Map propMap = [type: explicitType, description: pVal.description ?: ""]
+                if (explicitType == "object" && pVal.properties) propMap.properties = pVal.properties
+                else if (explicitType == "array" && pVal.items) propMap.items = pVal.items
+                properties[pKey] = propMap
+            }
         }
     }
     List rawRequired = tool.inputSchema?.required ?: []
@@ -383,7 +382,8 @@ try {
                 Map requestPayload = [
                     model      : modelName,
                     messages   : messages,
-                    temperature: 0.2
+                    temperature: 0.2,
+                    max_tokens : 8192
                 ]
 
                 boolean hasArchetypesInHistory = messages.any { msg ->
@@ -406,15 +406,15 @@ try {
                         }
                     } else {
                         ec.logger.info("🔒 [PLAN TURN ${currentTurn}] Locking tools; forcing JSON completion synthesis.")
-                        requestPayload.tools = null
-                        requestPayload.tool_choice = "none"
+                        requestPayload.remove("tools")
+                        requestPayload.remove("tool_choice")
                         requestPayload.response_format = [ type: "json_object" ]
                     }
                 } else if (currentMode == "build") {
                     if (currentTurn >= 3) {
                         ec.logger.info("🔒 [BUILD TURN ${currentTurn}] Locking tools; enforcing JSON astTree synthesis.")
-                        requestPayload.tools = null
-                        requestPayload.tool_choice = "none"
+                        requestPayload.remove("tools")
+                        requestPayload.remove("tool_choice")
                         requestPayload.response_format = [ type: "json_object" ]
                     } else {
                         if (openAiTools.size() > 0) {
@@ -529,7 +529,8 @@ try {
                                 continue
                             } else if (normCalledName.contains("resourcelist") || normCalledName.contains("palette") 
                                     || normCalledName.contains("toollist") || normCalledName.contains("tooldefinition") 
-                                    || normCalledName.contains("directory") || normCalledName.contains("filelist")) {
+                                    || normCalledName.contains("directory") || normCalledName.contains("filelist")
+                                    || normCalledName.contains("listfiles") || normCalledName.contains("workspace")) {
                                 ec.logger.info("📋 [TOOL PASSTHROUGH] Benign response for unmapped discovery tool '${calledName}'.")
                                 messages.add([
                                     role: "tool",
@@ -595,8 +596,45 @@ try {
                         }
                     }
 
-                    // Append user directive immediately following tool outputs when preparing to lock tools
-                    if (currentMode == "build" && currentTurn >= 2) {
+                    // Prompt injection after tool responses to guide synthesis
+                    if (currentMode == "plan" && currentTurn >= 1) {
+                        ec.logger.info("📝 [PROMPT INJECTION] Injecting explicit Plan JSON synthesis directive following tool responses...")
+                        messages.add([
+                            role: "user",
+                            content: """Discovery phase complete. Now formulate and output the complete canonical Moqui architecture plan based on the specification and discovered archetypes.
+Target Screen Artifact: '${effectiveArtifactUri}'
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "status": "PLANNED",
+  "type": "PLAN_FORMULATION",
+  "targetArtifactUri": "${effectiveArtifactUri}",
+  "recommendedArchetype": "master-detail",
+  "suggestedEntities": ["mantle.party.Person"],
+  "screenContract": {
+    "screenTitle": "Resident Care Dashboard",
+    "requireAuthentication": true,
+    "parameters": [],
+    "transitions": []
+  },
+  "entityFieldBindings": [
+    { "entityName": "mantle.party.Person", "fieldName": "firstName", "encrypt": false, "label": "First Name" }
+  ],
+  "securityAndHipaaRules": [
+    "HIPAA: Encrypt all resident PHI and medical data fields",
+    "Audit: enable-audit-log='true' on sensitive care records"
+  ],
+  "architectureSummary": "Detailed narrative explaining the architecture, layout, entity relationships, and service interactions.",
+  "formulationSteps": [
+    "1. Define screen XML structure adhering to xml-screen-3.xsd",
+    "2. Configure data preparation actions and entity queries",
+    "3. Build UI widgets matching the recommended archetype"
+  ],
+  "message": "Summary of plan formulation"
+}
+Do NOT call any additional tools. Return strictly the raw JSON object."""
+                        ])
+                    } else if (currentMode == "build" && currentTurn >= 2) {
                         ec.logger.info("📝 [PROMPT INJECTION] Injecting explicit astTree synthesis directive following tool responses...")
                         messages.add([
                             role: "user",
@@ -610,9 +648,12 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
                     ec.logger.info("🔄 [CONTINUING MULTI-TURN] Turn ${currentTurn} tool execution complete. Requesting final synthesis from model...")
 
                 } else {
-                    finalMessage = assistantMessage.content ?: ""
-                    ec.logger.info("🏁 [SYNTHESIS COMPLETE - Turn ${currentTurn}] Content length: ${finalMessage.length()} chars")
-                    executionSuccess = true
+                    finalMessage = assistantMessage.content ?: assistantMessage.reasoning_content ?: ""
+                    ec.logger.info("🏁 [SYNTHESIS COMPLETE - Turn ${currentTurn}] Content length: ${finalMessage.length()} chars (Finish Reason: ${choice?.finish_reason})")
+                    if (!finalMessage && rawResponseBody) {
+                        ec.logger.warn("⚠️ [EMPTY SYNTHESIS PAYLOAD] Raw API response: ${rawResponseBody}")
+                    }
+                    executionSuccess = (finalMessage.trim().length() > 0)
                 }
             }
         } finally {
@@ -639,6 +680,8 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
         if (currentMode == "plan") {
             if (parsedContent && parsedContent.cleanArtifactUri) {
                 cleanTargetUri = cleanScreenUri(parsedContent.cleanArtifactUri.toString(), targetComponent)
+            } else if (parsedContent && parsedContent.targetArtifactUri) {
+                cleanTargetUri = cleanScreenUri(parsedContent.targetArtifactUri.toString(), targetComponent)
             }
         
             Map planResponse = [
@@ -654,7 +697,7 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
                 securityAndHipaaRules  : parsedContent?.securityAndHipaaRules ?: [],
                 architectureSummary    : parsedContent?.architectureSummary ?: finalMessage,
                 formulationSteps       : parsedContent?.formulationSteps ?: [],
-                message                : parsedContent?.architectureSummary ?: finalMessage,
+                message                : parsedContent?.message ?: parsedContent?.architectureSummary ?: finalMessage,
                 rawXmlContent          : null,
                 astTree                : null,
                 files                  : []

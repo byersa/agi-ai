@@ -153,23 +153,62 @@
                 newStep.userMessageId = userMsgId
                 ec.logger.info("👤 [recordAndDispatch#PipelineStep] Saved User AgiMessage #${userMsgId}")
 
-                // 4. Dispatch the AI execution turn
+                // 4. Dispatch the AI execution turn with exponential backoff retry for transient 503/429 errors
                 ec.logger.info("⚡ [recordAndDispatch#PipelineStep] Synchronously calling dispatch#AgentTurn with mode='${modeCode}', aiProfile='${effectiveProfile}'...")
                 Map dispatchResult = [:]
-                try {
-                    dispatchResult = ec.service.sync()
-                        .name("org.moqui.ai.discussion.AgiDiscussionServices.dispatch#AgentTurn")
-                        .parameters([
-                            discussionId    : discussionId,
-                            userPrompt      : directivePrompt,
-                            parentMessageId : userMsgId,
-                            mode            : modeCode,
-                            aiProfileName   : effectiveProfile
-                        ])
-                        .call()
-                } catch (Exception ex) {
-                    ec.logger.error("💥 [recordAndDispatch#PipelineStep] Exception thrown during dispatch#AgentTurn: " + ex.message, ex)
-                    dispatchResult.completionText = '{"status":"error","error":"' + ex.message.replace('"', "'") + '"}'
+                int maxRetries = 3
+                int attempt = 0
+                long baseBackoffMs = 2000L
+                boolean callSucceeded = false
+
+                while (attempt < maxRetries && !callSucceeded) {
+                    attempt++
+                    try {
+                        if (attempt > 1) {
+                            ec.logger.warn("🔄 [recordAndDispatch#PipelineStep] Retrying dispatch#AgentTurn (Attempt ${attempt}/${maxRetries})...")
+                        }
+                        dispatchResult = ec.service.sync()
+                            .name("org.moqui.ai.discussion.AgiDiscussionServices.dispatch#AgentTurn")
+                            .parameters([
+                                discussionId    : discussionId,
+                                userPrompt      : directivePrompt,
+                                parentMessageId : userMsgId,
+                                mode            : modeCode,
+                                aiProfileName   : effectiveProfile
+                            ])
+                            .call()
+
+                        String textCandidate = dispatchResult?.completionText ?: ""
+                        boolean hasTransientError = textCandidate.contains("503") ||
+                                                   textCandidate.contains("429") ||
+                                                   textCandidate.contains("UNAVAILABLE") ||
+                                                   textCandidate.contains("RESOURCE_EXHAUSTED")
+
+                        if (hasTransientError && attempt < maxRetries) {
+                            long sleepMs = baseBackoffMs * attempt
+                            ec.logger.warn("⚠️ [recordAndDispatch#PipelineStep] Upstream LLM reported transient error (${textCandidate.take(100)}). Backing off for ${sleepMs}ms before retry...")
+                            Thread.sleep(sleepMs)
+                        } else {
+                            callSucceeded = true
+                        }
+                    } catch (Exception ex) {
+                        String exMsg = ex.message ?: ""
+                        boolean isRetryable = exMsg.contains("503") ||
+                                             exMsg.contains("429") ||
+                                             exMsg.contains("UNAVAILABLE") ||
+                                             exMsg.contains("timeout") ||
+                                             exMsg.contains("SocketTimeout")
+
+                        if (isRetryable && attempt < maxRetries) {
+                            long sleepMs = baseBackoffMs * attempt
+                            ec.logger.warn("⚠️ [recordAndDispatch#PipelineStep] Transient exception thrown: ${exMsg}. Retrying in ${sleepMs}ms (Attempt ${attempt}/${maxRetries})...")
+                            Thread.sleep(sleepMs)
+                        } else {
+                            ec.logger.error("💥 [recordAndDispatch#PipelineStep] Non-retryable or terminal exception on attempt ${attempt}: ${ex.message}", ex)
+                            dispatchResult.completionText = '{"status":"error","error":"' + exMsg.replace('"', "'") + '"}'
+                            callSucceeded = true
+                        }
+                    }
                 }
 
                 String asstMsgId = dispatchResult.assistantMessageId
@@ -414,4 +453,89 @@
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- ORCHESTRATE MODULE (BATCH FAN-OUT OF SUBSCREEN PLANS)                 -->
+    <!-- ===================================================================== -->
+    <service verb="orchestrate" noun="Module" type="inline">
+        <description>
+            Decomposes an approved module scope into individual draft PLAN steps.
+            Iterates through a list of sub-modules/sub-screens and forks a downstream
+            draft step for each, anchored to the parent discussion step.
+        </description>
+        <in-parameters>
+            <parameter name="sourceStepId" required="true"/>
+            <parameter name="subplans" type="List" required="true"/>
+            <parameter name="targetStanceEnumId" default-value="AamPlan"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="spawnedStepIds" type="List"/>
+            <parameter name="spawnedCount" type="Integer"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                ec.logger.info("⚡ [orchestrate#Module] Starting module orchestration from step #${sourceStepId} with ${subplans?.size() ?: 0} sub-screens...")
+
+                def srcStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                    .condition("pipelineStepId", sourceStepId)
+                    .one()
+                if (!srcStep) {
+                    ec.logger.error("❌ [orchestrate#Module] Source step #${sourceStepId} not found!")
+                    ec.message.addError("Source Step ${sourceStepId} not found")
+                    return
+                }
+
+                String discId = srcStep.discussionId
+                String activeIngressId = srcStep.egressPayloadId ?: srcStep.ingressPayloadId
+                List spawnedIds = []
+
+                subplans.eachWithIndex { Map sub, int idx ->
+                    String title = sub.title ?: sub.name ?: "Sub-Screen ${idx + 1}"
+                    String key = sub.key ?: "sub_${idx + 1}"
+                    String archetype = sub.suggestedArchetype ?: sub.archetype ?: "master-detail"
+                    String targetUri = sub.targetArtifactUri ?: (srcStep.targetArtifactUri ? "${srcStep.targetArtifactUri.replaceAll('\\.xml$', '')}/${title.replaceAll('\\s+', '')}.xml" : "")
+
+                    String directive = sub.directivePrompt
+                    if (!directive) {
+                        directive = "Orchestrate canonical implementation plan for '${title}' (${key}) subscreen.\n\n" +
+                                    "Target Screen: ${targetUri}\n" +
+                                    "Archetype: ${archetype}\n" +
+                                    (sub.description ? "Scope: ${sub.description}\n" : "") +
+                                    "Requirements:\n" +
+                                    "- Declare screen parameters and transitions adhering to xml-screen-3.xsd\n" +
+                                    "- Bind canonical Mantle UDM entities\n" +
+                                    "- Enforce HIPAA access rules and view permissions"
+                    }
+
+                    Map forkResult = ec.service.sync()
+                        .name("org.moqui.ai.pipeline.AgiPipelineServices.fork#PipelineStep")
+                        .parameters([
+                            sourceStepId       : sourceStepId,
+                            targetStanceEnumId : targetStanceEnumId ?: "AamPlan",
+                            ingressPayloadId   : activeIngressId,
+                            directivePrompt    : directive
+                        ])
+                        .call()
+
+                    String newId = forkResult.newStepId
+                    if (newId) {
+                        spawnedIds.add(newId)
+                        // Update step label and target URI to reflect specific subscreen
+                        def stepVal = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                            .condition("pipelineStepId", newId)
+                            .one()
+                        if (stepVal) {
+                            stepVal.stepLabel = "Plan: ${title}"
+                            if (targetUri) stepVal.targetArtifactUri = targetUri
+                            stepVal.update()
+                        }
+                        ec.logger.info("   ↳ Spawned Step #${newId}: ${title} (${archetype})")
+                    }
+                }
+
+                context.spawnedStepIds = spawnedIds
+                context.spawnedCount = spawnedIds.size()
+                ec.logger.info("⚡ [orchestrate#Module] Successfully orchestrated ${context.spawnedCount} sub-screens.")
+            ]]></script>
+        </actions>
+    </service>
 </services>
