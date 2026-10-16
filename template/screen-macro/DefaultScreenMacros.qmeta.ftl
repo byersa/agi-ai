@@ -477,12 +477,15 @@
 
 <#macro "screen-header">
 {
-  "_moquiTag": "screen-header",
-  "@type": "m-screen-header",
-  "attributes": {
-    "elevated": ${.node['@elevated']!'true'}
-  },
-  "children": [<@renderChildren parentNode=.node/>]
+    <#-- Pass 'dark' so Quasar knows not to paint it default light -->
+    "_moquiTag": "screen-header",
+    "@type": "m-screen-header",
+    "attributes": {
+        "elevated": false,
+        "dark": true,
+        "class": "bg-slate-950 text-white"
+    },
+    "children": [<@renderChildren parentNode=.node/>]
 }
 </#macro>
 

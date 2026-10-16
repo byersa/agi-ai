@@ -538,4 +538,28 @@
             ]]></script>
         </actions>
     </service>
+    <service verb="update" noun="PipelineStepArtifact" authenticate="anonymous-all">
+        <in-parameters>
+            <parameter name="pipelineStepId" required="true"/>
+            <parameter name="targetArtifactUri" required="true"/>
+        </in-parameters>
+        <actions>
+            <entity-find-one entity-name="org.moqui.ai.pipeline.AgiPipelineStep" value-field="step"/>
+            <if condition="step">
+                <set field="step.targetArtifactUri" from="targetArtifactUri"/>
+                <entity-update value-field="step"/>
+                
+                <!-- If the step has an ingress payload, update its target artifact as well -->
+                <if condition="step.ingressPayloadId">
+                    <entity-find-one entity-name="org.moqui.ai.payload.AgiPayload" value-field="ingPld">
+                        <field-map field-name="agiPayloadId" from="step.ingressPayloadId"/>
+                    </entity-find-one>
+                    <if condition="ingPld">
+                        <set field="ingPld.artifactUri" from="targetArtifactUri"/>
+                        <entity-update value-field="ingPld"/>
+                    </if>
+                </if>
+            </if>
+        </actions>
+    </service>
 </services>

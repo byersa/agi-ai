@@ -133,6 +133,12 @@
                     <service name="org.moqui.ai.pipeline.AgiPipelineServices.archive#PipelineBranch"/>
                 </method>
             </resource>
+            <!-- 🎯 Binds /pipeline/step/artifact -->
+            <resource name="artifact">
+                <method type="post">
+                    <service name="org.moqui.ai.pipeline.AgiPipelineServices.update#PipelineStepArtifact"/>
+                </method>
+            </resource>
         </resource>
         <resource name="orchestrate">
             <method type="post">
