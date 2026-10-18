@@ -12,7 +12,7 @@
             "properties": {
                 "payload": {
                     "type": "object",
-                    "description": "Screen artifact specific payload details",
+                    "description": "Screen artifact specific payload details and blueprint specification",
                     "properties": {
                         "targetMariaId": {
                             "type": [
@@ -34,6 +34,124 @@
                                 "null"
                             ],
                             "description": "URI of the canonical template blueprint if applied"
+                        },
+                        "screenTitle": {
+                            "type": "string",
+                            "description": "Header title displayed at the top of the root container"
+                        },
+                        "defaultSubscreen": {
+                            "type": "string",
+                            "description": "Name of the default subscreen matching default-subscreen and subscreens.@default-item"
+                        },
+                        "subscreens": {
+                            "type": "array",
+                            "description": "Declared child subscreens to mount in the screen viewport",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "name",
+                                    "location"
+                                ],
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    },
+                                    "title": {
+                                        "type": "string"
+                                    },
+                                    "location": {
+                                        "type": "string"
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "queries": {
+                            "type": "array",
+                            "description": "Declarative entity-find or entity-find-one actions",
+                            "items": {
+                                "type": "object",
+                                "required": [
+                                    "entity",
+                                    "list"
+                                ],
+                                "properties": {
+                                    "entity": {
+                                        "type": "string"
+                                    },
+                                    "list": {
+                                        "type": "string"
+                                    },
+                                    "authorizeSkip": {
+                                        "type": "string",
+                                        "enum": [
+                                            "view",
+                                            "all"
+                                        ]
+                                    },
+                                    "orderBy": {
+                                        "type": "string"
+                                    },
+                                    "key": {
+                                        "type": "string"
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "layout": {
+                            "type": "object",
+                            "description": "Declarative screen layout specification",
+                            "required": [
+                                "type",
+                                "columns"
+                            ],
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "two-column",
+                                        "single-column",
+                                        "dashboard"
+                                    ]
+                                },
+                                "columns": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": [
+                                            "span"
+                                        ],
+                                        "properties": {
+                                            "span": {
+                                                "type": "string",
+                                                "description": "Quasar responsive column class (e.g. col-12 col-md-4)"
+                                            },
+                                            "title": {
+                                                "type": "string"
+                                            },
+                                            "formType": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "form-list",
+                                                    "form-single"
+                                                ]
+                                            },
+                                            "renderSubscreens": {
+                                                "type": "boolean"
+                                            },
+                                            "fields": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                }
+                            },
+                            "additionalProperties": false
                         },
                         "astTree": {
                             "type": [

@@ -14,6 +14,10 @@
                        widget-render-class="org.moqui.ai.impl.screen.DeterministicVueRenderer"/>
     </screen-facade>
 
+    <service-facade>
+        <service-location location="component://agi-ai/service/agi/ai/ScreenGenerationServices.xml"/>
+    </service-facade>
+
     <webapp-list>
         <webapp name="webroot">
             <endpoint path="/agi-ws/{channel}" class="org.moqui.ai.AgiWebSocketEndpoint" timeout="3600000" enabled="true"/>
