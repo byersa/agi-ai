@@ -167,11 +167,76 @@
                         if (attempt > 1) {
                             ec.logger.warn("🔄 [recordAndDispatch#PipelineStep] Retrying dispatch#AgentTurn (Attempt ${attempt}/${maxRetries})...")
                         }
+                        // ---------------------------------------------------------------------
+                        // INGRESS PAYLOAD RESOLUTION & PROMPT HYDRATION
+                        // ---------------------------------------------------------------------
+                        String effectivePrompt = directivePrompt
+                        String resolvedIngressId = ingressPayloadId
+        
+                        // If not explicitly provided, inherit ingress from parent step's egress
+                        if (!resolvedIngressId && parentStepId) {
+                            def pStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                                .condition("pipelineStepId", parentStepId)
+                                .one()
+                            resolvedIngressId = pStep?.egressPayloadId ?: pStep?.ingressPayloadId
+                        }
+        
+                        if (resolvedIngressId) {
+                            newStep.ingressPayloadId = resolvedIngressId
+                            def ingPayload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                .condition("agiPayloadId", resolvedIngressId)
+                                .one()
+        
+                            if (ingPayload?.payloadJsonData) {
+                                try {
+                                    def slurper = new groovy.json.JsonSlurper()
+                                    def parsedIngress = slurper.parseText(ingPayload.payloadJsonData)
+                                    
+                                    // Unpack double-stringified message if present (e.g. Discuss step output)
+                                    if (parsedIngress instanceof Map && parsedIngress.message instanceof String && parsedIngress.message.trim().startsWith('{')) {
+                                        def inner = slurper.parseText(parsedIngress.message)
+                                        if (inner instanceof Map) parsedIngress.putAll(inner)
+                                    }
+                                    if (parsedIngress instanceof Map && parsedIngress.planDetails instanceof String && parsedIngress.planDetails.trim().startsWith('{')) {
+                                        def innerPlan = slurper.parseText(parsedIngress.planDetails)
+                                        if (innerPlan instanceof Map) parsedIngress.putAll(innerPlan)
+                                    }
+        
+                                    // Extract key upstream architectural contract fields
+                                    List upstreamModules = parsedIngress.proposedModules ?: parsedIngress.subplans ?: []
+                                    List upstreamEntities = parsedIngress.suggestedEntities ?: []
+                                    String upstreamArch = parsedIngress.architectureSummary ?: parsedIngress.replyMessage ?: ""
+                                    String recArchetype = parsedIngress.recommendedArchetype ?: ""
+        
+                                    StringBuilder contextBlock = new StringBuilder()
+                                    contextBlock.append("\n\n---\n### Upstream Context Contract (from Payload #${resolvedIngressId}):\n")
+                                    if (recArchetype) contextBlock.append("- Recommended Archetype: ${recArchetype}\n")
+                                    if (upstreamEntities) contextBlock.append("- Bound Entities: ${upstreamEntities.join(', ')}\n")
+                                    if (upstreamModules) {
+                                        contextBlock.append("- Approved Modules / Subscreens to Implement:\n")
+                                        upstreamModules.each { mod ->
+                                            contextBlock.append("  * ${mod.key ?: mod.name}: ${mod.title ?: mod.name} (${mod.suggestedArchetype ?: 'standard'})\n")
+                                            if (mod.description) contextBlock.append("    Scope: ${mod.description}\n")
+                                        }
+                                    }
+                                    if (upstreamArch) {
+                                        contextBlock.append("- Architectural Summary / Directives:\n")
+                                        contextBlock.append("  ${upstreamArch.take(1200).replaceAll('\\n', '\n  ')}\n")
+                                    }
+                                    contextBlock.append("---\n")
+        
+                                    effectivePrompt = directivePrompt + contextBlock.toString()
+                                    ec.logger.info("💉 [recordAndDispatch#PipelineStep] Hydrated prompt with ${contextBlock.length()} chars of upstream context from Payload #${resolvedIngressId}")
+                                } catch (Exception parseEx) {
+                                    ec.logger.warn("⚠️ [recordAndDispatch#PipelineStep] Could not parse ingress payload #${resolvedIngressId} for prompt hydration: ${parseEx.message}")
+                                }
+                            }
+                        }
                         dispatchResult = ec.service.sync()
                             .name("org.moqui.ai.discussion.AgiDiscussionServices.dispatch#AgentTurn")
                             .parameters([
                                 discussionId    : discussionId,
-                                userPrompt      : directivePrompt,
+                                userPrompt      : effectivePrompt,
                                 parentMessageId : userMsgId,
                                 mode            : modeCode,
                                 aiProfileName   : effectiveProfile
