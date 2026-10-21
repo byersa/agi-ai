@@ -267,7 +267,7 @@
     <service verb="assemble" noun="SystemInstruction" type="inline" authenticate="anonymous-all">
         <description>
             Dynamically composes a layered system instruction Markdown prompt:
-            Base Foundations -> Operational Mode Directives -> Artifact Directives -> Situational Context -> Facet Overlays.
+            Base Foundations -> Operational Mode Directives -> Artifact Directives -> Component Directives -> Compliance Facets.
         </description>
         <in-parameters>
             <parameter name="artifactUri" required="false"/>
@@ -297,7 +297,9 @@
                     for (String path in paths) {
                         try {
                             ResourceReference rr = ec.resource.getLocationReference(path)
-                            if (rr != null && rr.getExists()) return rr.getText()
+                            if (rr != null && rr.getExists()) {
+                                return rr.getText()
+                            }
                         } catch (Exception e) {
                             ec.logger.warn("⚠️ [assemble#SystemInstruction] Error reading ${path}:${e.message}")
                         }
@@ -354,18 +356,30 @@
                     prompt.append(modeDirective.trim()).append("\n\n")
                 }
 
-                // 4. SITUATIONAL GROUNDING
+                // 4. COMPONENT DOMAIN DIRECTIVES (Standardized Hook: component.md & domain-instructions.md)
                 if (targetComponent) {
-                    try {
-                        ResourceReference compRef = ec.resource.getLocationReference("component://${targetComponent}")
-                        if (compRef != null && compRef.getExists()) {
-                            prompt.append("### Active Workspace Target Component: ${targetComponent}\n")
-                            prompt.append("When suggesting paths or dependencies, anchor them to `component://${targetComponent}/...`.\n\n")
-                        }
-                    } catch (Exception ignore) {}
+                    String compDirectives = loadFirstResource([
+                        "component://${targetComponent}/mcp/instructions/component.md",
+                        "component://${targetComponent}/mcp/instructions/domain-instructions.md",
+                        "component://${targetComponent}/mcp/instructions/${targetComponent}-domain.md"
+                    ])
+                    if (compDirectives) {
+                        prompt.append("<!-- ============================================================= -->\n")
+                        prompt.append("<!-- DOMAIN DIRECTIVES: ${targetComponent.toUpperCase()} -->\n")
+                        prompt.append("<!-- ============================================================= -->\n")
+                        prompt.append(compDirectives.trim()).append("\n\n")
+                    } else {
+                        try {
+                            ResourceReference compRef = ec.resource.getLocationReference("component://${targetComponent}")
+                            if (compRef != null && compRef.getExists()) {
+                                prompt.append("### Active Workspace Target Component: ${targetComponent}\n")
+                                prompt.append("When suggesting paths or dependencies, anchor them to `component://${targetComponent}/...`.\n\n")
+                            }
+                        } catch (Exception ignore) {}
+                    }
                 }
 
-                // 5. COMPLIANCE & BEHAVIORAL FACETS
+                // 5. COMPLIANCE & BEHAVIORAL FACETS (HIPAA & Security Enforcement)
                 Map facetMap = (facets ?: [:]) as Map
                 facetMap.each { fKey, fVal ->
                     if (fVal == true || fVal == "true") {

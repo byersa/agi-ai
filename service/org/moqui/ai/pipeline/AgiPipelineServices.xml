@@ -270,15 +270,17 @@
                             Thread.sleep(sleepMs)
                         } else {
                             ec.logger.error("💥 [recordAndDispatch#PipelineStep] Non-retryable or terminal exception on attempt ${attempt}: ${ex.message}", ex)
+                            if (dispatchResult == null) dispatchResult = [:]
                             dispatchResult.completionText = '{"status":"error","error":"' + exMsg.replace('"', "'") + '"}'
                             callSucceeded = true
                         }
                     }
                 }
 
-                String asstMsgId = dispatchResult.assistantMessageId
-                String agentText = dispatchResult.completionText
-                String generatedPayloadId = dispatchResult.stagedPayloadId
+                if (dispatchResult == null) dispatchResult = [:]
+                String asstMsgId = dispatchResult?.assistantMessageId
+                String agentText = dispatchResult?.completionText ?: '{"status":"error","error":"dispatch#AgentTurn returned no result"}'
+                String generatedPayloadId = dispatchResult?.stagedPayloadId
 
                 ec.logger.info("📬 [recordAndDispatch#PipelineStep] Received dispatch completion:")
                 ec.logger.info("   assistantMessageId : ${asstMsgId}")

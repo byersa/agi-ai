@@ -375,7 +375,7 @@
         </description>
         <in-parameters>
             <parameter name="discussionId" required="true"/>
-            <parameter name="userPrompt" required="true"/>
+            <parameter name="userPrompt" required="true" allow-html="any"/>
             <parameter name="parentMessageId"/>
             <parameter name="instructionName"/>
             <parameter name="mode" default-value="discuss"/>
@@ -453,7 +453,9 @@
                 ])
                 if (guardrails) systemInstruction.append(guardrails.trim()).append("\n\n")
 
+                // Layer 2: Component-Specific Domain Directives (Standard Hook: component.md)
                 String domainDirectives = loadFirstExisting([
+                    "component://${comp}/mcp/instructions/component.md",
                     "component://${comp}/mcp/instructions/domain-instructions.md",
                     "component://${comp}/mcp/instructions/${comp}-domain.md"
                 ])
