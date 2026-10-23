@@ -1277,4 +1277,150 @@
         </actions>
     </service>
 
+    <!-- ===================================================================== -->
+    <!-- DELETE SINGLE DISCUSSION / PIPELINE INITIATIVE                        -->
+    <!-- ===================================================================== -->
+    <service verb="delete" noun="Discussion" transaction="force-new" authenticate="false">
+        <description>Deletes a single discussion and its cascade of steps, messages, and payloads.</description>
+        <in-parameters>
+            <parameter name="discussionId" required="true" type="String"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="success" type="Boolean"/>
+            <parameter name="message" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                String dId = discussionId?.trim()
+                if (!dId) {
+                    context.success = false
+                    context.message = "Missing discussionId."
+                    return
+                }
+
+                ec.logger.info("🗑️ [delete#Discussion] Purging discussion: ${dId}")
+
+                // 1. Gather all linked Payloads
+                def payloads = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                    .condition("discussionId", dId)
+                    .list()
+                List payloadIds = payloads*.agiPayloadId ?: []
+
+                // 2. Break self-referential pointers on Payloads
+                payloads.each { p ->
+                    if (p.parentPayloadId) {
+                        p.parentPayloadId = null
+                        p.update()
+                    }
+                }
+
+                // 3. Nullify references on Pipeline Steps
+                def steps = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                    .condition("discussionId", dId)
+                    .list()
+                steps.each { s ->
+                    s.parentStepId = null
+                    s.ingressPayloadId = null
+                    s.egressPayloadId = null
+                    s.assistantMessageId = null
+                    s.userMessageId = null
+                    s.update()
+                }
+
+                // 4. Nullify references on Messages
+                def msgs = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    .condition("discussionId", dId)
+                    .list()
+                msgs.each { m ->
+                    m.parentMessageId = null
+                    m.stagedPayloadId = null
+                    m.update()
+                }
+
+                // 5. Purge Leaf Facets
+                if (payloadIds) {
+                    ec.entity.find("org.moqui.ai.payload.AgiPayloadFacet")
+                        .condition("agiPayloadId", "in", payloadIds)
+                        .deleteAll()
+                }
+
+                List msgIds = msgs*.messageId ?: []
+                if (msgIds) {
+                    ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
+                        .condition("messageId", "in", msgIds)
+                        .deleteAll()
+                    ec.entity.find("org.moqui.ai.discussion.AgiMessageFacet")
+                        .condition("messageId", "in", msgIds)
+                        .deleteAll()
+                }
+
+                ec.entity.find("org.moqui.ai.discussion.AgiDiscussionFacet")
+                    .condition("discussionId", dId)
+                    .deleteAll()
+                ec.entity.find("org.moqui.ai.discussion.AgiDiscussionRelationship")
+                    .condition("parentDiscussionId", dId)
+                    .deleteAll()
+                ec.entity.find("org.moqui.ai.discussion.AgiDiscussionRelationship")
+                    .condition("childDiscussionId", dId)
+                    .deleteAll()
+
+                // 6. Purge Core Entities (Steps -> Payloads -> Messages -> Discussion)
+                ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                    .condition("discussionId", dId)
+                    .deleteAll()
+
+                payloads.each { p -> p.delete() }
+
+                ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    .condition("discussionId", dId)
+                    .deleteAll()
+
+                ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", dId)
+                    .deleteAll()
+
+                context.success = true
+                context.message = "Discussion ${dId} purged successfully."
+                ec.logger.info("✅ [delete#Discussion] Deleted pipeline ${dId}")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- UPDATE DISCUSSION / PIPELINE TITLE                                    -->
+    <!-- ===================================================================== -->
+    <service verb="update" noun="DiscussionTitle" type="inline">
+        <description>Updates the name and shortName of an AgiDiscussion pipeline in place.</description>
+        <in-parameters>
+            <parameter name="discussionId" required="true" type="String"/>
+            <parameter name="name" required="true" type="String"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="discussionId" type="String"/>
+            <parameter name="name" type="String"/>
+            <parameter name="shortName" type="String"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", discussionId.trim())
+                    .one()
+                if (!disc) {
+                    ec.message.addError("Discussion #${discussionId} not found.")
+                    return
+                }
+
+                String cleanTitle = name?.trim() ?: "Pipeline #${discussionId}"
+                disc.name = cleanTitle
+                disc.shortName = cleanTitle.take(30)
+                disc.lastActivityDate = ec.user.nowTimestamp
+                disc.update()
+
+                context.discussionId = disc.discussionId
+                context.name = disc.name
+                context.shortName = disc.shortName
+                ec.logger.info("✏️ [update#DiscussionTitle] Updated discussion #${discussionId} title to: '${cleanTitle}'")
+            ]]></script>
+        </actions>
+    </service>
 </services>

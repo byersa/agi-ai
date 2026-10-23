@@ -114,6 +114,17 @@
                 <service name="org.moqui.ai.discussion.AgiDiscussionServices.get#PipelineGraph"/>
             </method>
         </resource>
+        <!-- In-Place Title Edit Endpoint -->
+        <resource name="title">
+            <method type="post">
+                <service name="org.moqui.ai.discussion.AgiDiscussionServices.update#DiscussionTitle"/>
+            </method>
+        </resource>
+        <id name="discussionId">
+            <method type="delete">
+                <service name="org.moqui.ai.discussion.AgiDiscussionServices.delete#Discussion"/>
+            </method>
+        </id>
     </resource>
     <!-- First-Class Pipeline Step Endpoints -->
     <resource name="pipeline">
@@ -137,6 +148,12 @@
             <resource name="artifact">
                 <method type="post">
                     <service name="org.moqui.ai.pipeline.AgiPipelineServices.update#PipelineStepArtifact"/>
+                </method>
+            </resource>
+            <!-- 🎯 Binds /pipeline/step/promote -->
+            <resource name="promote">
+                <method type="post">
+                    <service name="org.moqui.ai.pipeline.AgiPipelineServices.promote#PipelineStepToDiscussion"/>
                 </method>
             </resource>
         </resource>
