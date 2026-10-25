@@ -410,10 +410,12 @@
         <description>
             Creates an unexecuted draft step branching off or succeeding an existing step.
             Supports advancing from Plan -> Build with targetStanceEnumId.
-            egressPayloadId is explicitly left null.
+            If sourceStepId is omitted, attaches to the latest step or initializes 
+            the root step of the discussion. egressPayloadId is explicitly left null.
         </description>
         <in-parameters>
-            <parameter name="sourceStepId" required="true"/>
+            <parameter name="discussionId"/>
+            <parameter name="sourceStepId" required="false"/>
             <parameter name="directivePrompt" allow-html="any"/>
             <parameter name="modifiedPayloadJson" allow-html="any"/>
             <parameter name="stanceEnumId"/>
@@ -427,19 +429,55 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
-                ec.logger.info("🔱 [fork#PipelineStep] Processing fork/advance from source step #${sourceStepId}...")
+                ec.logger.info("🔱 [fork#PipelineStep] Processing fork/advance (sourceStepId: #${sourceStepId}, discussionId: #${discussionId})...")
 
-                def srcStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
-                    .condition("pipelineStepId", sourceStepId)
-                    .one()
-                if (!srcStep) { 
-                    ec.logger.error("❌ [fork#PipelineStep] Source step #${sourceStepId} not found!")
-                    ec.message.addError("Source Step ${sourceStepId} not found")
-                    return 
+                def srcStep = null
+                if (sourceStepId) {
+                    srcStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                        .condition("pipelineStepId", sourceStepId)
+                        .one()
                 }
 
-                String discId = srcStep.discussionId
-                
+                String discId = srcStep?.discussionId ?: discussionId
+                if (!discId) {
+                    ec.logger.error("❌ [fork#PipelineStep] Neither sourceStepId nor discussionId was provided!")
+                    ec.message.addError("Either sourceStepId or discussionId is required")
+                    return
+                }
+
+                // If sourceStepId was not provided, look for existing latest step in this discussion
+                if (!srcStep) {
+                    srcStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                        .condition("discussionId", discId)
+                        .orderBy("-stepSequenceNum")
+                        .limit(1)
+                        .one()
+                }
+
+                // If discussion is completely empty, initialize a root discuss step
+                if (!srcStep) {
+                    def discRec = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                        .condition("discussionId", discId)
+                        .one()
+                    String comp = discRec?.targetComponent ?: "nursinghome"
+
+                    srcStep = ec.entity.makeValue("org.moqui.ai.pipeline.AgiPipelineStep")
+                    srcStep.discussionId = discId
+                    srcStep.parentStepId = null
+                    srcStep.stepSequenceNum = 1
+                    srcStep.stanceEnumId = "AamDiscuss"
+                    srcStep.statusId = "PlsCommitted"
+                    srcStep.stepLabel = "Initiative Root"
+                    srcStep.directivePrompt = "Initial discussion root for ${comp}"
+                    srcStep.targetArtifactUri = discRec?.targetArtifactUri
+                    srcStep.createdDate = ec.user.nowTimestamp
+                    srcStep.setSequencedIdPrimary()
+                    srcStep.create()
+                    ec.logger.info("🌱 [fork#PipelineStep] Created root step #${srcStep.pipelineStepId} for empty discussion #${discId}")
+                }
+
+                String parentId = srcStep.pipelineStepId
+
                 String rawStance = targetStanceEnumId ?: stanceEnumId ?: srcStep.stanceEnumId
                 String effectiveStance = "AamPlan"
                 if (rawStance in ["AamBuild", "build"]) effectiveStance = "AamBuild"
@@ -459,7 +497,7 @@
                     clonedPayload.targetComponent = srcPayload?.targetComponent ?: "nursinghome"
                     clonedPayload.artifactUri = srcStep.targetArtifactUri
                     clonedPayload.discussionId = discId
-                    clonedPayload.title = "Ingress for Step successor to #${sourceStepId}"
+                    clonedPayload.title = "Ingress for Step successor to #${parentId}"
                     clonedPayload.userPromptText = directivePrompt ?: srcStep.directivePrompt
                     clonedPayload.payloadJsonData = modifiedPayloadJson.trim()
                     clonedPayload.parentPayloadId = activeIngressId
@@ -472,16 +510,16 @@
 
                 int branchSeq = ((srcStep.stepSequenceNum as Integer) ?: 1) + 1
                 String defaultPrompt = directivePrompt ?: (effectiveStance == "AamBuild" 
-                    ? "Generate canonical Moqui XML screen and UI artifacts from Plan #${sourceStepId}" 
+                    ? "Generate canonical Moqui XML screen and UI artifacts from Plan #${parentId}" 
                     : srcStep.directivePrompt)
 
                 def forkedStep = ec.entity.makeValue("org.moqui.ai.pipeline.AgiPipelineStep")
                 forkedStep.discussionId = discId
-                forkedStep.parentStepId = sourceStepId
+                forkedStep.parentStepId = parentId
                 forkedStep.stepSequenceNum = branchSeq
                 forkedStep.stanceEnumId = effectiveStance
                 forkedStep.statusId = "PlsDraft"
-                forkedStep.stepLabel = (effectiveStance == "AamBuild" ? "Build from #" : "Branch from #") + sourceStepId
+                forkedStep.stepLabel = (effectiveStance == "AamBuild" ? "Build from #" : "Branch from #") + parentId
                 forkedStep.ingressPayloadId = activeIngressId
                 forkedStep.directivePrompt = defaultPrompt
                 forkedStep.egressPayloadId = null // Unexecuted
@@ -494,7 +532,7 @@
                 context.ingressPayloadId = activeIngressId
                 context.statusId = "PlsDraft"
 
-                ec.logger.info("🔱 [fork#PipelineStep] Successfully created draft successor Step #${forkedStep.pipelineStepId} [Stance: ${effectiveStance}, Parent: #${sourceStepId}]")
+                ec.logger.info("🔱 [fork#PipelineStep] Successfully created draft successor Step #${forkedStep.pipelineStepId} [Stance: ${effectiveStance}, Parent: #${parentId}]")
             ]]></script>
         </actions>
     </service>

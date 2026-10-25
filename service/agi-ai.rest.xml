@@ -163,4 +163,10 @@
             </method>
         </resource>
     </resource>
+    <!-- Component Screen Hierarchy & Progress Matrix -->
+    <resource name="component-hierarchy">
+        <method type="get">
+            <service name="org.moqui.ide.AgiIdeServices.get#ComponentScreenHierarchy"/>
+        </method>
+    </resource>
 </resource>
