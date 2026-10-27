@@ -335,10 +335,15 @@ try {
         }
 
         try {
+            // For conversational and conceptual elicitation turns, do not bind tools
+            // unless explicitly requested by the stance, avoiding Google OpenAI proxy 400s on tool response replay.
             def client = ec.llm.getClient(targetProfile)
-                    .system(systemInstruction)
-                    .tools(nativeLlmTools)
-                    .maxIterations(MAX_TURNS)
+                .system(systemInstruction)
+                .maxIterations(MAX_TURNS)
+
+            if (currentMode != "discuss") {
+                client.tools(nativeLlmTools)
+            }
 
             if (context.aiModelName) {
                 client.model(context.aiModelName)
@@ -351,13 +356,52 @@ try {
                     client.user(turn.content)
                 }
             }
-            long start = System.currentTimeMillis()
-            def resp = client.user(userPromptBuilder.toString()).call()
-            long duration = System.currentTimeMillis() - start
 
-            finalMessage = resp?.getContent() ?: resp?.toString() ?: ""
-            executionSuccess = true
-            ec.logger.info("🏁 [EC.LLM DISCUSS COMPLETE] Profile: ${targetProfile}, Duration: ${duration}ms, Output: ${finalMessage.length()} chars")
+            long start = System.currentTimeMillis()
+            try {
+                def resp = client.user(userPromptBuilder.toString()).call()
+                long duration = System.currentTimeMillis() - start
+
+                finalMessage = resp?.getContent() ?: resp?.toString() ?: ""
+                executionSuccess = (finalMessage.trim().length() > 0)
+                ec.logger.info("🏁 [EC.LLM DISCUSS COMPLETE] Profile: ${targetProfile}, Duration: ${duration}ms, Output: ${finalMessage.length()} chars")
+            } catch (Exception callEx) {
+                // Unwrap nested causes to find the root transport/HTTP error
+                Throwable root = callEx
+                while (root.getCause() != null && root != root.getCause()) {
+                    root = root.getCause()
+                }
+
+                String rawDetail = root.getMessage() ?: callEx.getMessage() ?: "Unknown LLM error"
+                ec.logger.error("💥 [EC.LLM DISCUSS FAILED] Profile: ${targetProfile}, Root Cause: ${rawDetail}", callEx)
+
+                String userFriendly = "Upstream AI Service Error"
+                if (rawDetail.contains("401") || rawDetail.contains("API key") || rawDetail.contains("invalid_api_key")) {
+                    userFriendly = "Authentication Failed: The API key for profile '${targetProfile}' is invalid or expired."
+                } else if (rawDetail.contains("429") || rawDetail.contains("RESOURCE_EXHAUSTED") || rawDetail.contains("quota")) {
+                    userFriendly = "Quota/Rate Limit Exceeded: Provider rate limit hit for profile '${targetProfile}'."
+                } else if (rawDetail.contains("503") || rawDetail.contains("UNAVAILABLE") || rawDetail.contains("overloaded")) {
+                    userFriendly = "Provider Unavailable: The model service (${targetProfile}) is temporarily unavailable."
+                } else if (rawDetail.contains("timeout") || rawDetail.contains("SocketTimeout")) {
+                    userFriendly = "Connection Timeout: Timed out waiting for response from '${targetProfile}'."
+                } else if (rawDetail.contains("404") || rawDetail.contains("NOT_FOUND")) {
+                    userFriendly = "Model Not Found: The configured model name was not recognized by '${targetProfile}'."
+                }
+
+                // Format friendly JSON error payload so the pipeline step records the diagnostic
+                finalMessage = JsonOutput.toJson([
+                    status: "error",
+                    errorCode: "LLM_CALL_FAILED",
+                    profileName: targetProfile,
+                    diagnosticDetail: rawDetail,
+                    message: userFriendly
+                ])
+                executionSuccess = false
+                
+                context.completionText = finalMessage
+                context.status = "error"
+                return
+            }
 
         } finally {
             if (txSuspended) {
@@ -749,10 +793,18 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
     }
 
 } catch (Exception e) {
-    ec.logger.error("❌ Agent Proxy Loop Execution Failed: " + e.getMessage(), e)
+    Throwable root = e
+    while (root.getCause() != null && root != root.getCause()) {
+        root = root.getCause()
+    }
+    String rootDetail = root.getMessage() ?: e.getMessage() ?: "Unknown execution error"
+    
+    ec.logger.error("❌ [AGENT PROXY LOOP FAILURE] Root Cause: ${rootDetail}", e)
     context.status = "error"
     context.completionText = JsonOutput.toJson([
         status: "error",
-        error: "Agent Exception: ${e.getMessage()}"
+        errorCode: "PROXY_LOOP_EXCEPTION",
+        error: rootDetail,
+        message: "Agent processing halted: ${rootDetail}"
     ])
 }

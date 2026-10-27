@@ -124,6 +124,21 @@
             <method type="delete">
                 <service name="org.moqui.ai.discussion.AgiDiscussionServices.delete#Discussion"/>
             </method>
+
+            <!-- Working Directives & component.md Sync Endpoints -->
+            <resource name="directives">
+                <method type="get">
+                    <service name="org.moqui.ai.discussion.AgiDiscussionServices.getOrEnsure#DiscussionDraftPayload"/>
+                </method>
+                <method type="post">
+                    <service name="org.moqui.ai.discussion.AgiDiscussionServices.save#DiscussionDirectives"/>
+                </method>
+                <resource name="pin">
+                    <method type="post">
+                        <service name="org.moqui.ai.discussion.AgiDiscussionServices.pin#TurnToDirectives"/>
+                    </method>
+                </resource>
+            </resource>
         </id>
     </resource>
     <!-- First-Class Pipeline Step Endpoints -->

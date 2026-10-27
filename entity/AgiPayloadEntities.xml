@@ -170,4 +170,51 @@
         <index name="AGI_PSTEP_PARENT"><index-field name="parentStepId"/></index>
     </entity>
 
+    <!-- ===================================================================== -->
+    <!-- PIPELINE STEP ASSOCIATION (DAG Multi-Parent / Multi-Edge Relationship)-->
+    <!-- ===================================================================== -->
+    <entity entity-name="AgiPipelineStepAssoc" package="org.moqui.ai.pipeline" enable-audit-log="true">
+        <description>
+            Represents directed dependency and data-flow edges between pipeline steps in a DAG.
+            Supports multi-parent convergence (fan-in / synthesis) and branching (fan-out).
+        </description>
+        <field name="pipelineStepAssocId" type="id" is-pk="true"/>
+        <field name="fromPipelineStepId" type="id" not-null="true">
+            <description>Predecessor step (Upstream Producer)</description>
+        </field>
+        <field name="toPipelineStepId" type="id" not-null="true">
+            <description>Successor step (Downstream Consumer)</description>
+        </field>
+        <field name="assocTypeEnumId" type="id" default="ApsaFeeds">
+            <description>ApsaFeeds (Data Flow), ApsaBranch (Discussion Fork), ApsaMerge (Synthesis)</description>
+        </field>
+        <field name="sequenceNum" type="number-integer"/>
+        <field name="createdDate" type="date-time"/>
+
+        <!-- Relationships -->
+        <relationship type="one" title="FromStep" related="org.moqui.ai.pipeline.AgiPipelineStep">
+            <key-map field-name="fromPipelineStepId" related="pipelineStepId"/>
+        </relationship>
+        <relationship type="one" title="ToStep" related="org.moqui.ai.pipeline.AgiPipelineStep">
+            <key-map field-name="toPipelineStepId" related="pipelineStepId"/>
+        </relationship>
+        <relationship type="one" title="AssocType" related="moqui.basic.Enumeration">
+            <key-map field-name="assocTypeEnumId" related="enumId"/>
+        </relationship>
+
+        <index name="AGI_PSTEP_ASSOC_EDGE" unique="true">
+            <index-field name="fromPipelineStepId"/>
+            <index-field name="toPipelineStepId"/>
+            <index-field name="assocTypeEnumId"/>
+        </index>
+        <index name="AGI_PSTEP_ASSOC_TO"><index-field name="toPipelineStepId"/></index>
+
+        <seed-data>
+            <!-- Pipeline Step Association Types -->
+            <moqui.basic.EnumerationType enumTypeId="AgiPipelineStepAssocType" description="Pipeline Step Association Types"/>
+            <moqui.basic.Enumeration enumId="ApsaFeeds" enumTypeId="AgiPipelineStepAssocType" enumCode="FEEDS" description="Upstream Feeds Downstream Ingress"/>
+            <moqui.basic.Enumeration enumId="ApsaBranch" enumTypeId="AgiPipelineStepAssocType" enumCode="BRANCH" description="Exploratory Fork"/>
+            <moqui.basic.Enumeration enumId="ApsaMerge" enumTypeId="AgiPipelineStepAssocType" enumCode="MERGE" description="Synthesis / Convergence of Multiple Branches"/>
+        </seed-data>
+    </entity>
 </entities>

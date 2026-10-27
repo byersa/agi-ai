@@ -366,12 +366,13 @@
     </service>
 
     <!-- ===================================================================== -->
-    <!-- 2. DISPATCH AGENT TURN (Layered & Prompt-Specific Instruction)        -->
+    <!-- 2. DISPATCH AGENT TURN (Layered, Prompt-Specific, Auto-Fallback)      -->
     <!-- ===================================================================== -->
     <service verb="dispatch" noun="AgentTurn" type="inline">
         <description>
             Assembles instruction context from agi-ide, targetComponent, and discussion facets,
-            invokes the AI engine, and records the assistant response.
+            invokes the AI engine with fallback profile support (e.g. gemini -> ollama),
+            and records the assistant response.
         </description>
         <in-parameters>
             <parameter name="discussionId" required="true"/>
@@ -389,6 +390,8 @@
         <actions>
             <script><![CDATA[
                 import org.moqui.resource.ResourceReference
+                import groovy.json.JsonSlurper
+                import groovy.json.JsonOutput
 
                 def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
                     .condition("discussionId", discussionId)
@@ -405,26 +408,35 @@
                 Map mergedFacets = [:]
                 dFacets.each { mergedFacets[it.facetKey] = it.facetValue }
 
-                String resolvedProfile = aiProfileName
-                if (!resolvedProfile && mergedFacets) {
-                    resolvedProfile = mergedFacets.aiProfile ?: mergedFacets.modelProfile ?: mergedFacets.profile
+                // ---------------------------------------------------------------------
+                // PROFILE & FALLBACK CHAIN RESOLUTION
+                // ---------------------------------------------------------------------
+                String primaryProfile = aiProfileName
+                if (!primaryProfile && mergedFacets) {
+                    primaryProfile = mergedFacets.aiProfile ?: mergedFacets.modelProfile ?: mergedFacets.profile
                 }
-                if (!resolvedProfile) {
-                    resolvedProfile = ec.user.getPreference("${comp}.ai.profile") ?:
-                                      System.getProperty("${comp}.ai.profile") ?:
-                                      System.getProperty("agi.ai.default.profile")
+                if (!primaryProfile) {
+                    primaryProfile = ec.user.getPreference("${comp}.ai.profile") ?:
+                                     System.getProperty("${comp}.ai.profile") ?:
+                                     System.getProperty("agi.ai.default.profile")
                 }
-                if (!resolvedProfile) {
+                if (!primaryProfile) {
                     try {
                         def facade = ec.llm
                         if (facade != null && facade.getProfileNames()?.size() > 0) {
-                            resolvedProfile = facade.getDefault()?.getProfileName() ?: "gemini"
+                            primaryProfile = facade.getDefault()?.getProfileName() ?: "gemini"
                         }
                     } catch (Exception ignore) {
-                        resolvedProfile = "gemini"
+                        primaryProfile = "gemini"
                     }
                 }
-                ec.logger.info("🤖 [dispatch#AgentTurn] Resolved dynamic aiProfileName: '${resolvedProfile}' for discussion #${discussionId}")
+
+                // Build candidate profile failover list
+                List<String> profileCandidates = [primaryProfile]
+                //if (primaryProfile != "ollama") profileCandidates.add("ollama")
+                if (primaryProfile != "gemini" && !profileCandidates.contains("gemini")) profileCandidates.add("gemini")
+
+                ec.logger.info("🤖 [dispatch#AgentTurn] Primary Profile: '${primaryProfile}', Fallback Chain: ${profileCandidates}")
 
                 def loadFirstExisting = { List<String> paths ->
                     for (String path : paths) {
@@ -518,7 +530,7 @@
 
                         if (text.trim().startsWith("{") && text.trim().endsWith("}")) {
                             try {
-                                def parsed = new groovy.json.JsonSlurper().parseText(text)
+                                def parsed = new JsonSlurper().parseText(text)
                                 text = parsed.message ?: parsed.architectureSummary ?: text
                             } catch (Exception ignore) {}
                         }
@@ -548,7 +560,7 @@
                                 String rText = rConts ? rConts*.bodyText.join("\n\n") : ""
                                 if (rText.trim().startsWith("{") && rText.trim().endsWith("}")) {
                                     try {
-                                        def parsed = new groovy.json.JsonSlurper().parseText(rText)
+                                        def parsed = new JsonSlurper().parseText(rText)
                                         rText = parsed.message ?: parsed.architectureSummary ?: rText
                                     } catch (Exception ignore) {}
                                 }
@@ -564,24 +576,69 @@
                     ec.logger.info("🧵 [dispatch#AgentTurn] Ingested ${conversationHistory.size()} historical turns for context.")
                 }
 
-                Map proxyParams = [
-                    mode                : effectiveMode,
-                    userPrompt          : userPrompt,
-                    conversationHistory : conversationHistory,
-                    targetComponent     : comp,
-                    artifactUri         : artUri,
-                    facets              : mergedFacets,
-                    aiProfileName       : resolvedProfile
-                ]
+                // ---------------------------------------------------------------------
+                // MULTI-PROFILE FAILOVER EXECUTION LOOP
+                // ---------------------------------------------------------------------
+                String agentReply = null
+                String successfulProfile = null
 
-                Map turnResult = ec.service.sync()
-                    .name("org.moqui.ai.AgiAiGatewayServices.run#OpenAiProxy")
-                    .parameters(proxyParams)
-                    .call()
+                for (String candidateProfile : profileCandidates) {
+                    try {
+                        ec.logger.info("⚡ [dispatch#AgentTurn] Attempting dispatch via profile: '${candidateProfile}' (Mode: ${effectiveMode})...")
 
-                String agentReply = turnResult?.completionText ?: "Unable to complete assessment."
+                        Map proxyParams = [
+                            mode                : effectiveMode,
+                            userPrompt          : userPrompt,
+                            conversationHistory : conversationHistory,
+                            targetComponent     : comp,
+                            artifactUri         : artUri,
+                            facets              : mergedFacets,
+                            aiProfileName       : candidateProfile
+                        ]
+
+                        Map turnResult = ec.service.sync()
+                            .name("org.moqui.ai.AgiAiGatewayServices.run#OpenAiProxy")
+                            .parameters(proxyParams)
+                            .call()
+
+                        String replyCandidate = turnResult?.completionText ?: ""
+                        boolean isFailedCandidate = !replyCandidate ||
+                                                    replyCandidate.contains('"status":"error"') ||
+                                                    replyCandidate.contains('LLM_CALL_FAILED') ||
+                                                    replyCandidate.contains('PROXY_LOOP_EXCEPTION')
+
+                        if (isFailedCandidate) {
+                            ec.logger.warn("⚠️ [dispatch#AgentTurn] Profile '${candidateProfile}' returned failure payload. Checking failover...")
+                            agentReply = replyCandidate
+                            // Continue loop to try next fallback profile
+                        } else {
+                            agentReply = replyCandidate
+                            successfulProfile = candidateProfile
+                            ec.logger.info("✅ [dispatch#AgentTurn] Successful response received using profile: '${candidateProfile}'")
+                            break
+                        }
+                    } catch (Exception ex) {
+                        ec.logger.warn("⚠️ [dispatch#AgentTurn] Exception using profile '${candidateProfile}': ${ex.message}")
+                        agentReply = JsonOutput.toJson([
+                            status: "error",
+                            errorCode: "PROFILE_EXCEPTION",
+                            profileName: candidateProfile,
+                            message: ex.message
+                        ])
+                    }
+                }
+
+                if (!agentReply) {
+                    agentReply = JsonOutput.toJson([
+                        status: "error",
+                        errorCode: "ALL_PROFILES_EXHAUSTED",
+                        message: "All AI profiles (${profileCandidates.join(', ')}) failed to return a response."
+                    ])
+                }
+
                 context.completionText = agentReply
 
+                // Record Assistant Response turn
                 Map recResult = ec.service.sync()
                     .name("org.moqui.ai.discussion.AgiDiscussionServices.record#DiscussionTurn")
                     .parameters([
@@ -598,14 +655,15 @@
                 context.assistantMessageId = asstMsgId
                 context.stagedPayloadId = null
 
-                if (effectiveMode == "plan" && asstMsgId) {
+                // If Plan mode and response succeeded, persist AgiPayload
+                if (effectiveMode == "plan" && asstMsgId && !agentReply.contains('"status":"error"')) {
                     try {
                         String payloadJson = null
                         String planTitle = "Architecture Plan: " + (disc.name ?: comp)
 
                         if (agentReply.trim().startsWith("{") && agentReply.trim().endsWith("}")) {
                             try {
-                                def parsedJson = new groovy.json.JsonSlurper().parseText(agentReply)
+                                def parsedJson = new JsonSlurper().parseText(agentReply)
                                 if (parsedJson.astTree || parsedJson.files || parsedJson.plan) {
                                     payloadJson = agentReply.trim()
                                 } else if (parsedJson.message) {
@@ -625,7 +683,7 @@
                         }
 
                         if (!payloadJson) {
-                            payloadJson = groovy.json.JsonOutput.toJson([
+                            payloadJson = JsonOutput.toJson([
                                 mode           : "plan",
                                 planType       : "ARCHITECTURAL_BLUEPRINT",
                                 targetComponent: comp,
@@ -1074,14 +1132,14 @@
         </actions>
     </service>
 
-    <!-- ===================================================================== -->
-    <!-- GET PIPELINE GRAPH (TIER 1 & TIER 2 DATA SOURCE)                      -->
+<!-- ===================================================================== -->
+    <!-- GET PIPELINE GRAPH (DAG MULTI-PARENT & EDGE AWARE)                    -->
     <!-- ===================================================================== -->
     <service verb="get" noun="PipelineGraph" type="inline" authenticate="anonymous">
         <description>
             Fetches all high-level pipeline initiatives for Tier 1 index,
-            and resolves the DAG of compute steps for the Tier 2 canvas.
-            Pulls directly from AgiPipelineStep with fallback to AgiMessage.
+            and resolves the DAG of compute steps and multi-parent associations
+            for the Tier 2 canvas.
         </description>
         <in-parameters>
             <parameter name="targetComponent" default-value="nursinghome"/>
@@ -1115,7 +1173,6 @@
                     Map fMap = [:]
                     dFacets.each { fMap[it.facetKey] = it.facetValue }
 
-                    // Determine terminal stage reached in this initiative
                     String terminalStage = "discuss"
                     def lastStep = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
                         .condition("discussionId", dId)
@@ -1160,6 +1217,7 @@
                 // 2. Assemble DAG for Tier 2 Canvas
                 List nodes = []
                 List edges = []
+                Set addedEdges = new HashSet()
 
                 if (discussionId) {
                     def stepFind = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
@@ -1170,7 +1228,17 @@
                     def pipelineSteps = stepFind.orderBy("stepSequenceNum, createdDate").list()
 
                     if (pipelineSteps && !pipelineSteps.isEmpty()) {
-                        // 2A. FIRST-CLASS PIPELINE STEP MAPPING
+                        List stepIds = pipelineSteps*.pipelineStepId ?: []
+
+                        // Fetch explicit multi-parent association edges
+                        def assocList = []
+                        if (stepIds) {
+                            assocList = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStepAssoc")
+                                .condition("toPipelineStepId", "in", stepIds)
+                                .list()
+                        }
+
+                        // Map pipeline steps to nodes
                         pipelineSteps.each { s ->
                             String sId = s.pipelineStepId as String
                             String stance = "plan"
@@ -1213,61 +1281,43 @@
                                 targetArtifactUri    : s.targetArtifactUri,
                                 entryDate            : s.createdDate?.toString()
                             ])
+                        }
 
-                            if (s.parentStepId) {
-                                edges.add([
-                                    edgeId : "${s.parentStepId}->${sId}",
-                                    from   : s.parentStepId as String,
-                                    to     : sId,
-                                    label  : "feeds"
-                                ])
+                        // Build edges from explicit AgiPipelineStepAssoc records
+                        if (assocList && !assocList.isEmpty()) {
+                            assocList.each { assoc ->
+                                String fromId = assoc.fromPipelineStepId as String
+                                String toId = assoc.toPipelineStepId as String
+                                String edgeKey = "${fromId}->${toId}"
+                                if (!addedEdges.contains(edgeKey)) {
+                                    addedEdges.add(edgeKey)
+                                    edges.add([
+                                        edgeId : edgeKey,
+                                        from   : fromId,
+                                        to     : toId,
+                                        label  : assoc.assocTypeEnumId == 'ApsaMerge' ? 'merge' : 'feeds'
+                                    ])
+                                }
                             }
                         }
-//                    } else {
-//                        // 2B. FALLBACK TO LEGACY DISCUSSION MESSAGES
-//                        def msgFind = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
-//                            .condition("discussionId", discussionId)
-//                        if (!showArchived) msgFind.condition("statusId", "not-equals", "AmsArchived")
-//                        def allMsgs = msgFind.orderBy("entryDate").list()
-//
-//                        allMsgs.each { m ->
-//                            String mId = m.messageId as String
-//                            def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
-//                                .condition("messageId", mId)
-//                                .orderBy("contentSeqId")
-//                                .list()
-//                            def titledContent = contents?.find { it.title != null && !it.title.toString().trim().isEmpty() }
-//                            String title = titledContent?.title
-//                            String body = contents ? contents*.bodyText.join("\n\n") : ""
-//
-//                            String actionType = m.stagedPayloadId ? "plan" : (m.targetArtifactUri?.endsWith(".xml") ? "build" : "discuss")
-//
-//                            nodes.add([
-//                                stageId              : mId,
-//                                parentStageId        : m.parentMessageId,
-//                                discussionId         : m.discussionId,
-//                                actionType           : actionType,
-//                                role                 : m.senderRoleEnumId == "AsrAssistant" ? "assistant" : "user",
-//                                label                : title ?: (body ? body.take(35) + "..." : "Turn #" + mId),
-//                                fullText             : body,
-//                                targetArtifactUri    : m.targetArtifactUri,
-//                                stagedPayloadId      : m.stagedPayloadId,
-//                                ingressPayloadId     : m.stagedPayloadId,
-//                                egressPayloadId      : m.stagedPayloadId,
-//                                statusId             : m.statusId,
-//                                isArchived           : (m.statusId == "AmsArchived"),
-//                                entryDate            : m.entryDate?.toString()
-//                            ])
-//
-//                            if (m.parentMessageId) {
-//                                edges.add([
-//                                    edgeId : "${m.parentMessageId}->${mId}",
-//                                    from   : m.parentMessageId as String,
-//                                    to     : mId,
-//                                    label  : "feeds"
-//                                ])
-//                            }
-//                        }
+
+                        // Fallback / complement with parentStepId if no explicit association edge exists
+                        pipelineSteps.each { s ->
+                            if (s.parentStepId) {
+                                String fromId = s.parentStepId as String
+                                String toId = s.pipelineStepId as String
+                                String edgeKey = "${fromId}->${toId}"
+                                if (!addedEdges.contains(edgeKey)) {
+                                    addedEdges.add(edgeKey)
+                                    edges.add([
+                                        edgeId : edgeKey,
+                                        from   : fromId,
+                                        to     : toId,
+                                        label  : 'feeds'
+                                    ])
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1420,6 +1470,245 @@
                 context.name = disc.name
                 context.shortName = disc.shortName
                 ec.logger.info("✏️ [update#DiscussionTitle] Updated discussion #${discussionId} title to: '${cleanTitle}'")
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- GET OR ENSURE DISCUSSION DRAFT PAYLOAD (Root Working Buffer)         -->
+    <!-- ===================================================================== -->
+    <service verb="getOrEnsure" noun="DiscussionDraftPayload" type="inline">
+        <description>
+            Resolves or initializes the single discussion-level root AgiPayload
+            (messageId is null, statusId is PlsDraft) that mirrors component.md.
+        </description>
+        <in-parameters>
+            <parameter name="discussionId" required="true"/>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="agiPayloadId"/>
+            <parameter name="userPromptText"/>
+            <parameter name="targetComponent"/>
+            <parameter name="filePath"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.resource.ResourceReference
+
+                def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", discussionId)
+                    .one()
+                String comp = disc?.targetComponent ?: targetComponent ?: "nursinghome"
+                String filePath = "component://${comp}/mcp/instructions/component.md"
+
+                // 1. Query by convention: messageId == null && statusId == "PlsDraft"
+                def rootPayload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                    .condition("discussionId", discussionId)
+                    .condition("messageId", null)
+                    .condition("statusId", "PlsDraft")
+                    .one()
+
+                if (!rootPayload) {
+                    // Check if component.md already exists on disk to seed the buffer
+                    String initialText = ""
+                    try {
+                        ResourceReference rr = ec.resource.getLocationReference(filePath)
+                        if (rr != null && rr.getExists()) {
+                            initialText = rr.getText() ?: ""
+                        }
+                    } catch (Exception ignore) {}
+
+                    if (!initialText || !initialText.trim()) {
+                        initialText = """# Architecture Directives: ${comp}
+<!-- Live working specification compiled from discussion decisions. -->
+
+## Core Requirements & Objectives
+- Initialized from Discussion #${discussionId}
+"""
+                    }
+
+                    rootPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                    rootPayload.discussionId = discussionId
+                    rootPayload.messageId = null
+                    rootPayload.targetComponent = comp
+                    rootPayload.modeEnumId = "AamDiscuss"
+                    rootPayload.statusId = "PlsDraft"
+                    rootPayload.title = "Directives Working Buffer: " + (disc?.name ?: comp)
+                    rootPayload.userPromptText = initialText
+                    rootPayload.createdDate = ec.user.nowTimestamp
+                    rootPayload.setSequencedIdPrimary()
+                    rootPayload.create()
+
+                    // Ensure file exists on disk
+                    try {
+                        ResourceReference rr = ec.resource.getLocationReference(filePath)
+                        if (rr != null && !rr.getExists()) {
+                            rr.putText(initialText)
+                        }
+                    } catch (Exception ex) {
+                        ec.logger.warn("⚠️ Could not initialize ${filePath} on disk: ${ex.message}")
+                    }
+                }
+
+                context.agiPayloadId = rootPayload.agiPayloadId
+                context.userPromptText = rootPayload.userPromptText
+                context.targetComponent = comp
+                context.filePath = filePath
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- PIN TURN TO DIRECTIVES (Audit Anchor + Sync to Buffer & Disk)        -->
+    <!-- ===================================================================== -->
+    <service verb="pin" noun="TurnToDirectives" type="inline">
+        <description>
+            Creates an immutable provenance AgiPayload for a specific message turn,
+            appends its content to the root discussion AgiPayload, and flushes to component.md.
+        </description>
+        <in-parameters>
+            <parameter name="discussionId" required="true"/>
+            <parameter name="messageId" required="true"/>
+            <parameter name="pinnedTitle"/>
+            <parameter name="pinnedContent" allow-html="any"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="pinnedPayloadId"/>
+            <parameter name="rootPayloadId"/>
+            <parameter name="updatedDirectivesText"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.resource.ResourceReference
+
+                def msg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
+                    .condition("messageId", messageId)
+                    .one()
+                if (!msg) { ec.message.addError("Message #${messageId} not found"); return }
+
+                def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", discussionId)
+                    .one()
+                String comp = disc?.targetComponent ?: "nursinghome"
+
+                // 1. Determine Content to Pin
+                String contentToPin = pinnedContent
+                if (!contentToPin || !contentToPin.trim()) {
+                    def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
+                        .condition("messageId", messageId)
+                        .orderBy("contentSeqId")
+                        .list()
+                    contentToPin = contents ? contents*.bodyText.join("\n\n") : ""
+                }
+
+                String title = pinnedTitle ?: "Pinned Directive from Turn #${messageId}"
+
+                // 2. Create the Historical Audit Payload (Anchored to this specific message)
+                def auditPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
+                auditPayload.discussionId = discussionId
+                auditPayload.messageId = messageId
+                auditPayload.targetComponent = comp
+                auditPayload.modeEnumId = "AamDiscuss"
+                auditPayload.statusId = "PlsCommitted"
+                auditPayload.title = title
+                auditPayload.userPromptText = contentToPin
+                auditPayload.createdDate = ec.user.nowTimestamp
+                auditPayload.setSequencedIdPrimary()
+                auditPayload.create()
+
+                context.pinnedPayloadId = auditPayload.agiPayloadId
+
+                // 3. Ensure and Update Root Draft Buffer (messageId == null && statusId == PlsDraft)
+                Map ensureRes = ec.service.sync().name("org.moqui.ai.discussion.AgiDiscussionServices.getOrEnsure#DiscussionDraftPayload")
+                    .parameters([discussionId: discussionId, targetComponent: comp])
+                    .call()
+
+                String rootPayloadId = ensureRes.agiPayloadId
+                String currentText = ensureRes.userPromptText ?: ""
+
+                StringBuilder updatedText = new StringBuilder(currentText.trim())
+                updatedText.append("\n\n### ${title}\n")
+                updatedText.append(contentToPin.trim())
+                updatedText.append("\n")
+
+                def rootPayload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                    .condition("agiPayloadId", rootPayloadId)
+                    .one()
+                if (rootPayload) {
+                    rootPayload.userPromptText = updatedText.toString()
+                    rootPayload.update()
+                }
+
+                // 4. Flush Updated Buffer to component.md on disk
+                String diskPath = "component://${comp}/mcp/instructions/component.md"
+                try {
+                    ResourceReference rr = ec.resource.getLocationReference(diskPath)
+                    if (rr != null) {
+                        rr.putText(updatedText.toString())
+                        ec.logger.info("📝 [pin#TurnToDirectives] Flushed pinned turn #${messageId} to ${diskPath}")
+                    }
+                } catch (Exception ex) {
+                    ec.logger.warn("⚠️ Could not write ${diskPath} to disk: ${ex.message}")
+                }
+
+                context.rootPayloadId = rootPayloadId
+                context.updatedDirectivesText = updatedText.toString()
+            ]]></script>
+        </actions>
+    </service>
+
+    <!-- ===================================================================== -->
+    <!-- SAVE DISCUSSION DIRECTIVES (Sync Direct User Edits from Viewport)    -->
+    <!-- ===================================================================== -->
+    <service verb="save" noun="DiscussionDirectives" type="inline">
+        <description>
+            Persists manual user edits made in the directives viewport back to the
+            root AgiPayload and syncs to component.md on disk.
+        </description>
+        <in-parameters>
+            <parameter name="discussionId" required="true"/>
+            <parameter name="directivesText" required="true" allow-html="any"/>
+            <parameter name="targetComponent" default-value="nursinghome"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="agiPayloadId"/>
+            <parameter name="status" default-value="SUCCESS"/>
+        </out-parameters>
+        <actions>
+            <script><![CDATA[
+                import org.moqui.resource.ResourceReference
+
+                def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
+                    .condition("discussionId", discussionId)
+                    .one()
+                String comp = disc?.targetComponent ?: targetComponent ?: "nursinghome"
+
+                Map ensureRes = ec.service.sync().name("org.moqui.ai.discussion.AgiDiscussionServices.getOrEnsure#DiscussionDraftPayload")
+                    .parameters([discussionId: discussionId, targetComponent: comp])
+                    .call()
+
+                String rootPayloadId = ensureRes.agiPayloadId
+                def rootPayload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                    .condition("agiPayloadId", rootPayloadId)
+                    .one()
+                if (rootPayload) {
+                    rootPayload.userPromptText = directivesText
+                    rootPayload.update()
+                }
+
+                String diskPath = "component://${comp}/mcp/instructions/component.md"
+                try {
+                    ResourceReference rr = ec.resource.getLocationReference(diskPath)
+                    if (rr != null) {
+                        rr.putText(directivesText)
+                    }
+                } catch (Exception ex) {
+                    ec.logger.warn("⚠️ Could not write ${diskPath} to disk: ${ex.message}")
+                }
+
+                context.agiPayloadId = rootPayloadId
+                context.status = "SUCCESS"
             ]]></script>
         </actions>
     </service>
