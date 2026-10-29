@@ -588,10 +588,12 @@
 
                         Map proxyParams = [
                             mode                : effectiveMode,
+                            systemInstruction   : systemInstruction.toString(),
                             userPrompt          : userPrompt,
                             conversationHistory : conversationHistory,
                             targetComponent     : comp,
                             artifactUri         : artUri,
+                            activeArtifactLocation: artUri,
                             facets              : mergedFacets,
                             aiProfileName       : candidateProfile
                         ]
@@ -638,20 +640,23 @@
 
                 context.completionText = agentReply
 
-                // Record Assistant Response turn
-                Map recResult = ec.service.sync()
-                    .name("org.moqui.ai.discussion.AgiDiscussionServices.record#DiscussionTurn")
-                    .parameters([
-                        discussionId      : discussionId,
-                        parentMessageId   : parentMessageId,
-                        senderRoleEnumId  : "AsrAssistant",
-                        content           : agentReply,
-                        title             : effectiveMode == "plan" ? "Architecture Plan" : "AI Response",
-                        targetArtifactUri : artUri
-                    ])
-                    .call()
+                // Record Assistant Response turn in an isolated transaction so it is never blocked by outer web timeouts
+                String asstMsgId = null
+                ec.transaction.runRequireNew(60, "Record assistant discussion turn", {
+                    Map recResult = ec.service.sync()
+                        .name("org.moqui.ai.discussion.AgiDiscussionServices.record#DiscussionTurn")
+                        .parameters([
+                            discussionId      : discussionId,
+                            parentMessageId   : parentMessageId,
+                            senderRoleEnumId  : "AsrAssistant",
+                            content           : agentReply,
+                            title             : effectiveMode == "plan" ? "Architecture Plan" : "AI Response",
+                            targetArtifactUri : artUri
+                        ])
+                        .call()
+                    asstMsgId = recResult?.messageId
+                })
 
-                String asstMsgId = recResult.messageId
                 context.assistantMessageId = asstMsgId
                 context.stagedPayloadId = null
 
@@ -1560,12 +1565,12 @@
     </service>
 
     <!-- ===================================================================== -->
-    <!-- PIN TURN TO DIRECTIVES (Audit Anchor + Sync to Buffer & Disk)        -->
+    <!-- PIN TURN TO DIRECTIVES (With Pipeline Step & Message Fallback)        -->
     <!-- ===================================================================== -->
     <service verb="pin" noun="TurnToDirectives" type="inline">
         <description>
-            Creates an immutable provenance AgiPayload for a specific message turn,
-            appends its content to the root discussion AgiPayload, and flushes to component.md.
+            Creates an immutable provenance AgiPayload for a specific message turn or pipeline step,
+            appends its content to the root discussion AgiPayload, and flushes to component.md on disk.
         </description>
         <in-parameters>
             <parameter name="discussionId" required="true"/>
@@ -1581,37 +1586,91 @@
         <actions>
             <script><![CDATA[
                 import org.moqui.resource.ResourceReference
-
-                def msg = ec.entity.find("org.moqui.ai.discussion.AgiMessage")
-                    .condition("messageId", messageId)
-                    .one()
-                if (!msg) { ec.message.addError("Message #${messageId} not found"); return }
+                import groovy.json.JsonSlurper
 
                 def disc = ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
                     .condition("discussionId", discussionId)
                     .one()
                 String comp = disc?.targetComponent ?: "nursinghome"
+                String diskPath = "component://${comp}/mcp/instructions/component.md"
 
-                // 1. Determine Content to Pin
-                String contentToPin = pinnedContent
-                if (!contentToPin || !contentToPin.trim()) {
+                // 1. Resolve Content To Pin (Handles both AgiMessage and AgiPipelineStep)
+                String contentToPin = pinnedContent != null ? pinnedContent.trim() : ""
+                String resolvedTitle = pinnedTitle
+
+                if (!contentToPin) {
+                    // Try AgiMessageContent
                     def contents = ec.entity.find("org.moqui.ai.discussion.AgiMessageContent")
                         .condition("messageId", messageId)
                         .orderBy("contentSeqId")
                         .list()
-                    contentToPin = contents ? contents*.bodyText.join("\n\n") : ""
+                    if (contents) {
+                        contentToPin = contents*.bodyText.join("\n\n").trim()
+                        if (!resolvedTitle && contents[0].title) resolvedTitle = contents[0].title
+                    }
                 }
 
-                String title = pinnedTitle ?: "Pinned Directive from Turn #${messageId}"
+                if (!contentToPin) {
+                    // Try AgiPipelineStep (in case messageId is a pipelineStepId)
+                    def step = ec.entity.find("org.moqui.ai.pipeline.AgiPipelineStep")
+                        .condition("pipelineStepId", messageId)
+                        .one()
+                    if (step) {
+                        if (!resolvedTitle) resolvedTitle = step.stepLabel ?: "Step #${step.pipelineStepId} Consensus"
+                        if (step.egressPayloadId) {
+                            def ep = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                                .condition("agiPayloadId", step.egressPayloadId)
+                                .one()
+                            if (ep) {
+                                String rawJson = ep.payloadJsonData ?: ep.userPromptText ?: ""
+                                if (rawJson.startsWith("{") && rawJson.endsWith("}")) {
+                                    try {
+                                        def parsed = new JsonSlurper().parseText(rawJson)
+                                        contentToPin = parsed.message ?: parsed.replyMessage ?: parsed.architectureSummary ?: rawJson
+                                    } catch (Exception ignore) {
+                                        contentToPin = rawJson
+                                    }
+                                } else {
+                                    contentToPin = rawJson
+                                }
+                            }
+                        }
+                        if (!contentToPin) contentToPin = step.directivePrompt ?: ""
+                    }
+                }
 
-                // 2. Create the Historical Audit Payload (Anchored to this specific message)
+                if (!resolvedTitle) resolvedTitle = "Architecture Consensus from Step #${messageId}"
+
+                ec.logger.warn("📌 [pin#TurnToDirectives] Target ID: [${messageId}], Content Length: ${contentToPin.length()} chars")
+
+                // 2. Ensure Root Draft Payload Buffer (messageId == null && statusId == PlsDraft)
+                Map ensureRes = ec.service.sync().name("org.moqui.ai.discussion.AgiDiscussionServices.getOrEnsure#DiscussionDraftPayload")
+                    .parameters([discussionId: discussionId, targetComponent: comp])
+                    .call()
+
+                String rootPayloadId = ensureRes.agiPayloadId
+                def rootPayload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
+                    .condition("agiPayloadId", rootPayloadId)
+                    .one()
+
+                // Check physical file on disk: if disk file is empty or missing, treat buffer as empty
+                ResourceReference rr = ec.resource.getLocationReference(diskPath)
+                String diskContent = (rr != null && rr.getExists()) ? (rr.getText() ?: "") : ""
+
+                String currentText = rootPayload?.userPromptText ?: ""
+                if (diskContent.trim().length() == 0) {
+                    // Disk was wiped (e.g. via Clear button); sync rootPayload to match disk
+                    currentText = ""
+                }
+
+                // 3. Create Immutable Audit Payload
                 def auditPayload = ec.entity.makeValue("org.moqui.ai.payload.AgiPayload")
                 auditPayload.discussionId = discussionId
                 auditPayload.messageId = messageId
                 auditPayload.targetComponent = comp
                 auditPayload.modeEnumId = "AamDiscuss"
                 auditPayload.statusId = "PlsCommitted"
-                auditPayload.title = title
+                auditPayload.title = resolvedTitle
                 auditPayload.userPromptText = contentToPin
                 auditPayload.createdDate = ec.user.nowTimestamp
                 auditPayload.setSequencedIdPrimary()
@@ -1619,37 +1678,53 @@
 
                 context.pinnedPayloadId = auditPayload.agiPayloadId
 
-                // 3. Ensure and Update Root Draft Buffer (messageId == null && statusId == PlsDraft)
-                Map ensureRes = ec.service.sync().name("org.moqui.ai.discussion.AgiDiscussionServices.getOrEnsure#DiscussionDraftPayload")
-                    .parameters([discussionId: discussionId, targetComponent: comp])
-                    .call()
+                // 4. Duplicate Check: Only block if buffer already contains this exact turn marker AND content
+                String turnMarker = "Turn #${messageId}"
+                String stepMarker = "Step #${messageId}"
+                boolean isAlreadyPinned = false
 
-                String rootPayloadId = ensureRes.agiPayloadId
-                String currentText = ensureRes.userPromptText ?: ""
-
-                StringBuilder updatedText = new StringBuilder(currentText.trim())
-                updatedText.append("\n\n### ${title}\n")
-                updatedText.append(contentToPin.trim())
-                updatedText.append("\n")
-
-                def rootPayload = ec.entity.find("org.moqui.ai.payload.AgiPayload")
-                    .condition("agiPayloadId", rootPayloadId)
-                    .one()
-                if (rootPayload) {
-                    rootPayload.userPromptText = updatedText.toString()
-                    rootPayload.update()
+                if (currentText.trim().length() > 0) {
+                    if (currentText.contains(turnMarker) || currentText.contains(stepMarker)) {
+                        isAlreadyPinned = true
+                    }
                 }
 
-                // 4. Flush Updated Buffer to component.md on disk
-                String diskPath = "component://${comp}/mcp/instructions/component.md"
-                try {
-                    ResourceReference rr = ec.resource.getLocationReference(diskPath)
-                    if (rr != null) {
-                        rr.putText(updatedText.toString())
-                        ec.logger.info("📝 [pin#TurnToDirectives] Flushed pinned turn #${messageId} to ${diskPath}")
+                StringBuilder updatedText = new StringBuilder(currentText.trim())
+                if (isAlreadyPinned) {
+                    ec.logger.warn("⚠️ [pin#TurnToDirectives] Step/Turn #${messageId} already in buffer. Skipping duplicate append.")
+                } else {
+                    if (updatedText.length() > 0) {
+                        updatedText.append("\n\n")
                     }
-                } catch (Exception ex) {
-                    ec.logger.warn("⚠️ Could not write ${diskPath} to disk: ${ex.message}")
+                    updatedText.append("### ${resolvedTitle}\n")
+                    updatedText.append(contentToPin.trim())
+                    updatedText.append("\n")
+
+                    if (rootPayload) {
+                        rootPayload.userPromptText = updatedText.toString()
+                        rootPayload.update()
+                    }
+
+                    // 5. Flush to component.md on disk (reusing rr instance)
+                    try {
+                        if (rr != null) {
+                            rr.putText(updatedText.toString())
+                            ec.logger.info("📝 [pin#TurnToDirectives] Flushed ${updatedText.length()} chars to ${diskPath}")
+                        }
+                    } catch (Exception ex) {
+                        ec.logger.warn("⚠️ Could not write ${diskPath} to disk: ${ex.message}")
+                    }
+
+                    // Also synchronize WorkspaceBuffer DB row
+                    try {
+                        ec.service.sync().name("org.moqui.ide.AgiIdeServices.store#WorkspaceBuffer")
+                            .parameters([
+                                artifactUri: diskPath,
+                                userId: ec.user.userId ?: "system_ide_user",
+                                metaJsonBuffer: updatedText.toString()
+                            ])
+                            .call()
+                    } catch (Exception ignore) {}
                 }
 
                 context.rootPayloadId = rootPayloadId

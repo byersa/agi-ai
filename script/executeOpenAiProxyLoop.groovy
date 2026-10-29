@@ -272,24 +272,31 @@ ec.logger.info("🔧 [PROXY LOOP TOOLS] Exposing ${nativeLlmTools.size()} native
 String effectiveArtifactUri = artifactUri ? cleanScreenUri(artifactUri, targetComponent) : "component://${targetComponent}/screen/${targetComponent}.xml"
 Map facetsMap = (context.facets instanceof Map) ? context.facets : [:]
 
-Map assembleResult = [:]
-try {
-    assembleResult = ec.service.sync().name("org.moqui.ai.AgiAiGatewayServices.assemble#SystemInstruction").parameters([
-        artifactUri    : effectiveArtifactUri,
-        mode           : currentMode,
-        facets         : facetsMap,
-        targetComponent: targetComponent
-    ]).call() ?: [:]
-} catch (Exception ex) {
-    ec.logger.warn("⚠️ AgiAiGatewayServices.assemble#SystemInstruction call failed: ${ex.message}", ex)
+String systemInstruction = context.systemInstruction
+
+if (!systemInstruction || !systemInstruction.trim()) {
+    Map assembleResult = [:]
+    try {
+        assembleResult = ec.service.sync().name("org.moqui.ai.AgiAiGatewayServices.assemble#SystemInstruction").parameters([
+            artifactUri    : effectiveArtifactUri,
+            mode           : currentMode,
+            facets         : facetsMap,
+            targetComponent: targetComponent
+        ]).call() ?: [:]
+        systemInstruction = assembleResult?.systemInstruction
+    } catch (Exception ex) {
+        ec.logger.warn("⚠️ AgiAiGatewayServices.assemble#SystemInstruction call failed: ${ex.message}", ex)
+    }
 }
 
-String systemInstruction = assembleResult?.systemInstruction ?: """You are an expert Moqui architecture and development peer.
+if (!systemInstruction || !systemInstruction.trim()) {
+    systemInstruction = """You are an expert Moqui architecture and development peer.
 Favor declarative XML configurations (screens, services, entities) over imperative code.
 Return well-structured, valid JSON completions conforming to requested schemas.
 """
+}
 
-ec.logger.info("📜 [SYSTEM INSTRUCTION ASSEMBLED] Mode: ${currentMode}, Detected Type: ${assembleResult?.detectedArtifactType}, Total length: ${systemInstruction.length()} chars")
+ec.logger.info("📜 [SYSTEM INSTRUCTION ACTIVE] Mode: ${currentMode}, Length: ${systemInstruction.length()} chars")
 
 StringBuilder userPromptBuilder = new StringBuilder()
 if (activeRagContext && activeRagContext.trim()) {
@@ -300,16 +307,23 @@ userPromptBuilder.append("=== USER REQUEST ===\n")
 userPromptBuilder.append(userPrompt)
 
 List messages = [
-    [ role: "system", content: systemInstruction ],
+    [ role: "system", content: systemInstruction.trim() ]
 ]
+
 List history = (context.conversationHistory instanceof List) ? context.conversationHistory : []
+String lastHistoryContent = history ? history.last()?.content?.trim() : null
+String currentPromptContent = userPromptBuilder.toString().trim()
+
 history.each { turn ->
     if (turn?.role && turn?.content) {
         messages.add([ role: turn.role, content: turn.content ])
     }
 }
 
-messages.add([ role: "user", content: userPromptBuilder.toString() ])
+// Only append user prompt if it wasn't already the final message in history
+if (lastHistoryContent != currentPromptContent) {
+    messages.add([ role: "user", content: currentPromptContent ])
+}
 
 // =====================================================================================
 // STEP 3: MULTI-TURN ORCHESTRATION LOOP (Side-Effect Aware)
@@ -335,8 +349,6 @@ try {
         }
 
         try {
-            // For conversational and conceptual elicitation turns, do not bind tools
-            // unless explicitly requested by the stance, avoiding Google OpenAI proxy 400s on tool response replay.
             def client = ec.llm.getClient(targetProfile)
                 .system(systemInstruction)
                 .maxIterations(MAX_TURNS)
@@ -366,7 +378,6 @@ try {
                 executionSuccess = (finalMessage.trim().length() > 0)
                 ec.logger.info("🏁 [EC.LLM DISCUSS COMPLETE] Profile: ${targetProfile}, Duration: ${duration}ms, Output: ${finalMessage.length()} chars")
             } catch (Exception callEx) {
-                // Unwrap nested causes to find the root transport/HTTP error
                 Throwable root = callEx
                 while (root.getCause() != null && root != root.getCause()) {
                     root = root.getCause()
@@ -388,7 +399,6 @@ try {
                     userFriendly = "Model Not Found: The configured model name was not recognized by '${targetProfile}'."
                 }
 
-                // Format friendly JSON error payload so the pipeline step records the diagnostic
                 finalMessage = JsonOutput.toJson([
                     status: "error",
                     errorCode: "LLM_CALL_FAILED",
@@ -545,7 +555,6 @@ try {
 
                         String serviceName = matchedTool?.serviceCallName ?: resolveServiceForTool(calledName, matchedTool, ec)
 
-                        // Synthetic Handlers for read/validation operations without dedicated Moqui services
                         if (!serviceName) {
                             if (normCalledName.contains("validate")) {
                                 ec.logger.info("🛡️ [TOOL PASSTHROUGH] Auto-validating structure for tool '${calledName}'.")
@@ -683,9 +692,9 @@ Do NOT call any additional tools. Return strictly the raw JSON object."""
                         messages.add([
                             role: "user",
                             content: """All necessary discovery is complete.
-Now output the complete screen definition as a valid JSON object containing the 'astTree' property.
-The 'astTree' must represent the full Moqui XML screen hierarchy (screen, require-authentication, subscreens, actions, widgets) for '${effectiveArtifactUri}'.
-Do NOT call any additional tools. Return strictly the JSON object containing 'astTree'."""
+Now output the complete screen definition as a valid JSON object containing the 'rawXmlContent' and 'astTree' properties.
+The 'rawXmlContent' must contain the complete, valid Moqui XML string (starting with <?xml).
+Do NOT call any additional tools. Return strictly the JSON object."""
                         ])
                     }
 
@@ -721,6 +730,23 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
             }
         } catch (Exception ignore) {}
 
+        // Recursive unwrapper: if the model placed a JSON string inside 'message' or 'planDetails'
+        if (parsedContent) {
+            String innerStr = parsedContent.message instanceof String ? parsedContent.message : (parsedContent.planDetails instanceof String ? parsedContent.planDetails : null)
+            if (innerStr && innerStr.trim().startsWith("{") && innerStr.trim().endsWith("}")) {
+                try {
+                    Map innerObj = new JsonSlurper().parseText(innerStr.trim()) as Map
+                    if (innerObj.rawXmlContent || innerObj.astTree || innerObj.screenContract || innerObj.targetArtifactUri) {
+                        innerObj.each { k, v ->
+                            if (!parsedContent.containsKey(k) || parsedContent[k] == null) {
+                                parsedContent[k] = v
+                            }
+                        }
+                    }
+                } catch (Exception ignore) {}
+            }
+        }
+
         if (currentMode == "plan") {
             if (parsedContent && parsedContent.cleanArtifactUri) {
                 cleanTargetUri = cleanScreenUri(parsedContent.cleanArtifactUri.toString(), targetComponent)
@@ -752,20 +778,41 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
             context.createdArtifactUri = cleanTargetUri
             context.rawXmlContent      = null
         } else {
-            String finalXml = parsedContent?.rawXmlContent ?: (strippedText.startsWith("<screen") || strippedText.startsWith("<?xml") ? strippedText : null)
-            List filesList = (parsedContent?.files instanceof List) ? parsedContent.files : []
+            // Build mode: Resolve raw XML content
+            String finalXml = parsedContent?.rawXmlContent
+
+            // Fallback 1: Extract XML string from strippedText if it starts with <screen or <?xml
+            if (!finalXml && (strippedText.startsWith("<screen") || strippedText.startsWith("<?xml"))) {
+                finalXml = strippedText
+            }
+
+            // Fallback 2: Regex search for XML fence or screen tag anywhere inside the text
+            if (!finalXml && finalMessage) {
+                def xmlMatcher = finalMessage =~ /(?s)(<\?xml.*<\/screen>|<screen.*<\/screen>)/
+                if (xmlMatcher.find()) {
+                    finalXml = xmlMatcher.group(1).trim()
+                }
+            }
+
+            // Fallback 3: Compile AST tree if XML is missing but AST tree is available
             def finalAst = parsedContent?.astTree ?: null
+            if (!finalXml && finalAst) {
+                try {
+                    Map toXml = ec.service.sync().name("org.moqui.ide.AgiIdeServices.compile#TreeToXml")
+                        .parameters([layoutTree: finalAst])
+                        .call()
+                    finalXml = toXml?.xmlText
+                } catch (Exception ignore) {}
+            }
+
+            List filesList = (parsedContent?.files instanceof List) ? parsedContent.files : []
 
             if (parsedContent?.createdArtifactUri) {
                 cleanTargetUri = cleanScreenUri(parsedContent.createdArtifactUri.toString(), targetComponent)
             } else if (parsedContent?.targetArtifactUri) {
                 cleanTargetUri = cleanScreenUri(parsedContent.targetArtifactUri.toString(), targetComponent)
             } else if (!cleanTargetUri) {
-                if (userPrompt?.contains("NursingHomeApp.xml")) {
-                    cleanTargetUri = "component://${targetComponent}/screen/NursingHomeApp.xml"
-                } else {
-                    cleanTargetUri = "component://${targetComponent}/screen/${targetComponent}.xml"
-                }
+                cleanTargetUri = "component://${targetComponent}/screen/${targetComponent}.xml"
             }
 
             Map buildResponse = [
@@ -776,13 +823,28 @@ Do NOT call any additional tools. Return strictly the JSON object containing 'as
                 rawXmlContent     : finalXml,
                 astTree           : finalAst,
                 files             : filesList,
-                message           : parsedContent?.message ?: finalMessage
+                message           : finalXml ? "Screen XML generated and compiled successfully." : (parsedContent?.message ?: finalMessage)
             ]
 
             context.completionText     = JsonOutput.toJson(buildResponse)
             context.status             = "SUCCESS"
             context.createdArtifactUri = cleanTargetUri
             context.rawXmlContent      = finalXml
+
+            // Auto-persist valid XML to disk and workspace buffer so the editor stays in sync
+            if (finalXml && cleanTargetUri) {
+                try {
+                    ec.service.sync().name("org.moqui.ide.AgiIdeServices.save#ScreenXml").parameters([
+                        artifactUri    : cleanTargetUri,
+                        xmlText        : finalXml,
+                        metaJsonBuffer : finalAst ? JsonOutput.toJson(finalAst) : "",
+                        verifyEntities : false
+                    ]).call()
+                    ec.logger.info("💾 [executeOpenAiProxyLoop] Flushed generated XML to disk: ${cleanTargetUri}")
+                } catch (Exception diskEx) {
+                    ec.logger.warn("⚠️ Could not auto-save XML to disk: ${diskEx.message}")
+                }
+            }
         }
     } else {
         context.status = "error"

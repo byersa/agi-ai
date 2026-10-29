@@ -12,10 +12,12 @@
         </description>
         <in-parameters>
             <parameter name="mode" default-value="build"/>
+            <parameter name="systemInstruction" allow-html="any"/>
             <parameter name="userPrompt" required="true" allow-html="any"/>
             <parameter name="targetComponent" default-value="nursinghome"/>
-            <parameter name="focusCoordinate"/>
+            <parameter name="artifactUri"/>
             <parameter name="activeArtifactLocation"/>
+            <parameter name="focusCoordinate"/>
             <parameter name="targetMariaId"/>
             <parameter name="activeRagContext" allow-html="any"/>
             <parameter name="facets" type="Map"/>
