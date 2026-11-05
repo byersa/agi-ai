@@ -85,7 +85,7 @@
 
     <!-- Container-Level Facets & Global Constraints -->
     <entity entity-name="AgiDiscussionFacet" package="org.moqui.ai.discussion" table-name="AGI_DISCUSSION_FACET"
-            cache="true" enable-audit-log="true">
+            cache="true" enable-audit-log="true" authorize-skip="true">
         <description>
             High-level key-value metadata tags and agent directives attached to the entire Discussion Container.
             Inherited across all conversation turns within the discussion.
