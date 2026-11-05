@@ -186,6 +186,7 @@
         </out-parameters>
         <actions>
             <script><![CDATA[
+                // 1. Create AgiDiscussion
                 def newDisc = ec.entity.makeValue("org.moqui.ai.discussion.AgiDiscussion")
                 newDisc.name = name
                 newDisc.shortName = shortName ?: (name.take(20))
@@ -199,7 +200,21 @@
                 newDisc.setSequencedIdPrimary()
                 newDisc.create()
 
-                context.discussionId = newDisc.discussionId
+                String discId = newDisc.discussionId
+                context.discussionId = discId
+
+                // 2. Instantiate Native moqui.llm.LlmConversation with matching conversationId
+                try {
+                    def llmConv = ec.entity.makeValue("moqui.llm.LlmConversation")
+                    llmConv.conversationId = discId
+                    llmConv.profileName = ec.user.getPreference("${targetComponent}.ai.profile") ?: "gemini"
+                    llmConv.userId = ec.user.userId ?: "system_ide_user"
+                    llmConv.statusId = "LlmcsActive"
+                    llmConv.title = name
+                    llmConv.create()
+                } catch (Exception ex) {
+                    ec.logger.warn("⚠️ Could not create matching moqui.llm.LlmConversation for #${discId}: ${ex.message}")
+                }
 
                 if (facets instanceof Map) {
                     facets.each { k, v ->
@@ -433,7 +448,6 @@
 
                 // Build candidate profile failover list
                 List<String> profileCandidates = [primaryProfile]
-                //if (primaryProfile != "ollama") profileCandidates.add("ollama")
                 if (primaryProfile != "gemini" && !profileCandidates.contains("gemini")) profileCandidates.add("gemini")
 
                 ec.logger.info("🤖 [dispatch#AgentTurn] Primary Profile: '${primaryProfile}', Fallback Chain: ${profileCandidates}")
@@ -587,6 +601,7 @@
                         ec.logger.info("⚡ [dispatch#AgentTurn] Attempting dispatch via profile: '${candidateProfile}' (Mode: ${effectiveMode})...")
 
                         Map proxyParams = [
+                            discussionId        : discussionId,
                             mode                : effectiveMode,
                             systemInstruction   : systemInstruction.toString(),
                             userPrompt          : userPrompt,
@@ -612,7 +627,6 @@
                         if (isFailedCandidate) {
                             ec.logger.warn("⚠️ [dispatch#AgentTurn] Profile '${candidateProfile}' returned failure payload. Checking failover...")
                             agentReply = replyCandidate
-                            // Continue loop to try next fallback profile
                         } else {
                             agentReply = replyCandidate
                             successfulProfile = candidateProfile
@@ -640,7 +654,7 @@
 
                 context.completionText = agentReply
 
-                // Record Assistant Response turn in an isolated transaction so it is never blocked by outer web timeouts
+                // Record Assistant Response turn in an isolated transaction
                 String asstMsgId = null
                 ec.transaction.runRequireNew(60, "Record assistant discussion turn", {
                     Map recResult = ec.service.sync()
@@ -1099,7 +1113,7 @@
                             .condition("parentMessageId", targetMsgId)
                             .list()
                         children.each { child ->
-                            restoreMessageRecursive(child.messageId as String)
+                            archiveMessageRecursive(child.messageId as String)
                         }
                     }
                 }
@@ -1137,7 +1151,7 @@
         </actions>
     </service>
 
-<!-- ===================================================================== -->
+    <!-- ===================================================================== -->
     <!-- GET PIPELINE GRAPH (DAG MULTI-PARENT & EDGE AWARE)                    -->
     <!-- ===================================================================== -->
     <service verb="get" noun="PipelineGraph" type="inline" authenticate="anonymous">
@@ -1433,6 +1447,15 @@
                 ec.entity.find("org.moqui.ai.discussion.AgiDiscussion")
                     .condition("discussionId", dId)
                     .deleteAll()
+
+                // Purge native Moqui LLM tracking rows matching this discussion
+                try {
+                    ec.entity.find("moqui.llm.LlmCallLog").condition("conversationId", dId).deleteAll()
+                    ec.entity.find("moqui.llm.LlmMessage").condition("conversationId", dId).deleteAll()
+                    ec.entity.find("moqui.llm.LlmConversation").condition("conversationId", dId).deleteAll()
+                } catch (Exception ex) {
+                    ec.logger.warn("⚠️ Non-fatal cleanup note for moqui.llm rows: ${ex.message}")
+                }
 
                 context.success = true
                 context.message = "Discussion ${dId} purged successfully."

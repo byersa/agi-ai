@@ -6,7 +6,6 @@ import org.moqui.llm.LlmTool
 class WriteScreenXmlTool implements LlmTool {
     public static final String NAME = "write_screen_xml"
 
-    @Override boolean streamsPartialArguments() { return true }
     @Override String getName() { return NAME }
     @Override String getDescription() {
         return "Write or update a canonical Moqui screen XML file on disk. " +

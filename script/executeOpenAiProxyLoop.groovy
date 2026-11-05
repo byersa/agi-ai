@@ -6,7 +6,6 @@ import org.moqui.context.ExecutionContext
 import org.moqui.llm.LlmTool
 import org.moqui.llm.LlmMessage
 import org.moqui.llm.LlmResponse
-import org.moqui.impl.llm.tools.BrowseTool
 import org.moqui.ai.tools.WriteScreenXmlTool
 
 // =====================================================================================
@@ -17,11 +16,12 @@ String currentMode = (context.mode ?: "build").toLowerCase().trim()
 String userPrompt = context.userPrompt
 String targetComponent = context.targetComponent ?: "nursinghome"
 String artifactUri = context.targetArtifactUri ?: context.artifactUri ?: "component://${targetComponent}/screen/${targetComponent}.xml"
+String discId = (context.discussionId ?: context.facets?.discussionId)?.toString()
 
 String targetProfile = context.aiProfileName ?: (context.aiModelName?.contains("gemini") ? "gemini" : "ollama")
 int maxTurns = currentMode == "plan" ? 5 : (currentMode == "build" ? 4 : 8)
 
-ec.logger.info("🚀 [EC.LLM UNIFIED LOOP] mode: ${currentMode}, profile: ${targetProfile}, artifactUri: ${artifactUri}")
+ec.logger.info("🚀 [EC.LLM UNIFIED LOOP] mode: ${currentMode}, profile: ${targetProfile}, discussionId: ${discId}, artifactUri: ${artifactUri}")
 
 // Helper: Canonicalize Moqui screen component URIs
 def cleanScreenUri = { String rawUri, String comp ->
@@ -39,12 +39,9 @@ def cleanScreenUri = { String rawUri, String comp ->
 String effectiveArtifactUri = cleanScreenUri(artifactUri, targetComponent)
 
 // =====================================================================================
-// STEP 1: TOOL REGISTRATION (Native BrowseTool + Custom WriteScreenXmlTool + Dynamic MCP)
+// STEP 1: TOOL REGISTRATION
 // =====================================================================================
 List<LlmTool> activeTools = []
-
-// Core discovery tool
-activeTools.add(new BrowseTool())
 
 // AGI-IDE screen persistence tool (active for build mode)
 if (currentMode == "build") {
@@ -73,7 +70,7 @@ try {
 ec.logger.info("🔧 [UNIFIED TOOLS] Registered ${activeTools.size()} LlmTool instances for mode '${currentMode}'")
 
 // =====================================================================================
-// STEP 2: ASSEMBLE SYSTEM INSTRUCTIONS & CONVERSATION HISTORY
+// STEP 2: ASSEMBLE SYSTEM INSTRUCTIONS
 // =====================================================================================
 String systemInstruction = context.systemInstruction
 if (!systemInstruction || !systemInstruction.trim()) {
@@ -107,20 +104,47 @@ if (ec.transaction.isTransactionInPlace()) {
 }
 
 try {
+    // Ensure native moqui.llm.LlmConversation row exists before binding
+    if (discId) {
+        def convExists = ec.entity.find("moqui.llm.LlmConversation")
+            .condition("conversationId", discId)
+            .one()
+        if (!convExists) {
+            try {
+                def newConv = ec.entity.makeValue("moqui.llm.LlmConversation")
+                newConv.conversationId = discId
+                newConv.profileName = targetProfile
+                newConv.userId = ec.user.userId ?: "system_ide_user"
+                newConv.statusId = "LlmcsActive"
+                newConv.title = "Discussion #${discId}"
+                newConv.create()
+                ec.logger.info("🌱 [EC.LLM] Successfully initialized moqui.llm.LlmConversation #${discId}")
+            } catch (Exception convEx) {
+                ec.logger.warn("⚠️ Could not auto-seed LlmConversation #${discId}: ${convEx.message}", convEx)
+            }
+        }
+    }
+
     def client = ec.llm.client(targetProfile)
         .system(systemInstruction)
         .maxIterations(maxTurns)
         .tools(activeTools)
 
+    if (discId) {
+        client.conversation(discId)
+    }
+
     if (context.aiModelName) client.model(context.aiModelName)
 
-    // Replay conversation history
-    List history = (context.conversationHistory instanceof List) ? context.conversationHistory : []
-    history.each { turn ->
-        if (turn?.role == "assistant") {
-            client.messages([LlmMessage.assistant(turn.content)])
-        } else if (turn?.role == "user") {
-            client.user(turn.content)
+    // Replay conversation history only if no durable conversation was bound
+    if (!discId) {
+        List history = (context.conversationHistory instanceof List) ? context.conversationHistory : []
+        history.each { turn ->
+            if (turn?.role == "assistant") {
+                client.messages([LlmMessage.assistant(turn.content)])
+            } else if (turn?.role == "user") {
+                client.user(turn.content)
+            }
         }
     }
 
@@ -151,7 +175,7 @@ try {
         }
     }
 
-    // Try reading disk state if build mode updated the screen file
+    // Read disk state if build mode updated the screen file
     if (currentMode == "build") {
         try {
             def rr = ec.resource.getLocationReference(effectiveArtifactUri)
@@ -171,7 +195,6 @@ try {
             message            : completionText
         ]
 
-        // If completion is raw JSON, unpack structured fields
         if (completionText.trim().startsWith("{") && completionText.trim().endsWith("}")) {
             try {
                 Map jsonMap = new JsonSlurper().parseText(completionText.trim()) as Map

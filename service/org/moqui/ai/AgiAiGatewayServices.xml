@@ -11,6 +11,7 @@
             Executes multi-turn agent tool execution loop against OpenAI-compatible REST endpoints or ec.llm.
         </description>
         <in-parameters>
+            <parameter name="discussionId"/>
             <parameter name="mode" default-value="build"/>
             <parameter name="systemInstruction" allow-html="any"/>
             <parameter name="userPrompt" required="true" allow-html="any"/>
