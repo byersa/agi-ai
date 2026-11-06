@@ -42,7 +42,10 @@ class WriteScreenXmlTool implements LlmTool {
         String rawXml = arguments.xml?.toString()
 
         if (!uri || !rawXml) {
-            return [error: "Both artifactUri and xml are required."]
+            return groovy.json.JsonOutput.toJson([
+                status : "ERROR",
+                error  : "Both artifactUri and xml are required."
+            ])
         }
 
         try {
@@ -52,17 +55,18 @@ class WriteScreenXmlTool implements LlmTool {
                 verifyEntities : false
             ]).call()
 
-            return [
+            return groovy.json.JsonOutput.toJson([
                 status       : "SUCCESS",
                 artifactUri  : uri,
-                savedFilePath: result.savedFilePath,
+                savedFilePath: result.savedFilePath?.toString() ?: "",
                 message      : "Successfully validated and saved ${uri} to disk."
-            ]
+            ])
         } catch (Exception ex) {
-            return [
+            return groovy.json.JsonOutput.toJson([
+                status : "ERROR",
                 error  : "Failed to save screen XML: ${ex.message}",
                 details: ex.toString()
-            ]
+            ])
         }
     }
 }

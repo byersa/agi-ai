@@ -18,7 +18,7 @@
             <parameter name="directivePrompt" required="true" allow-html="any"/>
             <parameter name="ingressPayloadId"/>
             <parameter name="targetArtifactUri"/>
-            <parameter name="stepLabel"/>
+            <parameter name="stepLabel" allow-html="any"/>
             <parameter name="aiProfileName"/>
             <parameter name="modifiedPayloadJson" allow-html="any"/>
         </in-parameters>
@@ -147,7 +147,8 @@
                         currentStep.stepSequenceNum = nextSeq
                         currentStep.stanceEnumId = normalizedStance
                         currentStep.statusId = "PlsExecuting"
-                        currentStep.stepLabel = stepLabel ?: (directivePrompt.take(50) + "...")
+                        String cleanDefaultLabel = directivePrompt ? directivePrompt.replaceAll(/<[^>]+>/, ' ').replaceAll(/\s+/, ' ').trim() : "Directive"
+                        currentStep.stepLabel = stepLabel ?: (cleanDefaultLabel.take(50) + "...")
                         currentStep.ingressPayloadId = ingressPayloadId ?: null
                         currentStep.directivePrompt = directivePrompt
                         currentStep.targetArtifactUri = targetArtifact

@@ -19,7 +19,7 @@ String artifactUri = context.targetArtifactUri ?: context.artifactUri ?: "compon
 String discId = (context.discussionId ?: context.facets?.discussionId)?.toString()
 
 String targetProfile = context.aiProfileName ?: (context.aiModelName?.contains("gemini") ? "gemini" : "ollama")
-int maxTurns = currentMode == "plan" ? 5 : (currentMode == "build" ? 4 : 8)
+int maxTurns = currentMode == "plan" ? 5 : (currentMode == "build" ? 1 : 8)
 
 ec.logger.info("🚀 [EC.LLM UNIFIED LOOP] mode: ${currentMode}, profile: ${targetProfile}, discussionId: ${discId}, artifactUri: ${artifactUri}")
 
@@ -43,28 +43,29 @@ String effectiveArtifactUri = cleanScreenUri(artifactUri, targetComponent)
 // =====================================================================================
 List<LlmTool> activeTools = []
 
-// AGI-IDE screen persistence tool (active for build mode)
 if (currentMode == "build") {
+    // In build mode, write_screen_xml is the canonical tool.
+    // Do NOT load dynamic service tools to prevent tool-chain HTTP 400 errors.
     activeTools.add(new WriteScreenXmlTool())
-}
+} else {
+    // In discuss and plan modes, load read-only MCP tools
+    try {
+        Map toolsResult = ec.service.sync().name("org.moqui.ai.AgiMcpBridgeServices.list#Tools").call() ?: [:]
+        List rawTools = toolsResult.tools ?: toolsResult.toolsList ?: []
+        rawTools.each { tool ->
+            boolean isReadOnly = (tool.readOnly == true || tool.readOnly == "true" || tool.isReadOnly == true || tool.isReadOnly == "true")
+            if (!isReadOnly) return
 
-// Discover and register any declared MCP services
-try {
-    Map toolsResult = ec.service.sync().name("org.moqui.ai.AgiMcpBridgeServices.list#Tools").call() ?: [:]
-    List rawTools = toolsResult.tools ?: toolsResult.toolsList ?: []
-    rawTools.each { tool ->
-        boolean isReadOnly = (tool.readOnly == true || tool.readOnly == "true" || tool.isReadOnly == true || tool.isReadOnly == "true")
-        if (["plan", "discuss"].contains(currentMode) && !isReadOnly) return
-
-        String funcName = tool.name ?: tool.command?.replace("/", "")?.replace("-", "_")
-        if (tool.serviceCallName && ec.service.getServiceDefinition(tool.serviceCallName) != null) {
-            try {
-                activeTools.add(LlmTool.service(tool.serviceCallName, funcName))
-            } catch (Exception ignore) {}
+            String funcName = tool.name ?: tool.command?.replace("/", "")?.replace("-", "_")
+            if (tool.serviceCallName && ec.service.getServiceDefinition(tool.serviceCallName) != null) {
+                try {
+                    activeTools.add(LlmTool.service(tool.serviceCallName, funcName))
+                } catch (Exception ignore) {}
+            }
         }
+    } catch (Exception te) {
+        ec.logger.warn("⚠️ Could not dynamically discover MCP tools: ${te.message}")
     }
-} catch (Exception te) {
-    ec.logger.warn("⚠️ Could not dynamically discover MCP tools: ${te.message}")
 }
 
 ec.logger.info("🔧 [UNIFIED TOOLS] Registered ${activeTools.size()} LlmTool instances for mode '${currentMode}'")
@@ -152,11 +153,24 @@ try {
     client.user(userPrompt)
 
     long startTime = System.currentTimeMillis()
-    LlmResponse resp = client.call()
-    long duration = System.currentTimeMillis() - startTime
+    LlmResponse resp = null
+    String completionText = ""
 
-    String completionText = resp?.getContent() ?: ""
-    ec.logger.info("🏁 [EC.LLM TURN COMPLETE] Status: ${resp?.finishReason}, Duration: ${duration}ms, Output: ${completionText.length()} chars")
+    try {
+        resp = client.call()
+        completionText = resp?.getContent() ?: ""
+        long duration = System.currentTimeMillis() - startTime
+        ec.logger.info("🏁 [EC.LLM TURN COMPLETE] Status: ${resp?.finishReason}, Duration: ${duration}ms, Output: ${completionText.length()} chars")
+    } catch (Exception loopEx) {
+        long duration = System.currentTimeMillis() - startTime
+        def rr = ec.resource.getLocationReference(effectiveArtifactUri)
+        if (currentMode == "build" && rr != null && rr.exists && (System.currentTimeMillis() - rr.getLastModified()) < 30000) {
+            ec.logger.warn("⚠️ Tool write_screen_xml succeeded on disk within ${duration}ms, ignoring trailing loop turn failure: ${loopEx.message}")
+            completionText = "Screen XML updated on disk."
+        } else {
+            throw loopEx
+        }
+    }
 
     // =================================================================================
     // STEP 4: PACKAGE RESPONSE CONTRACT FOR AGI PIPELINE
@@ -167,9 +181,14 @@ try {
     // Check if write_screen_xml tool was executed during this turn
     if (resp?.toolResults) {
         def xmlToolResult = resp.toolResults.find { it.name == "write_screen_xml" }
-        if (xmlToolResult && xmlToolResult.content instanceof Map) {
-            Map resMap = (Map) xmlToolResult.content
-            if (resMap.status == "SUCCESS") {
+        if (xmlToolResult?.content) {
+            Map resMap = null
+            if (xmlToolResult.content instanceof Map) {
+                resMap = (Map) xmlToolResult.content
+            } else if (xmlToolResult.content instanceof CharSequence) {
+                try { resMap = new JsonSlurper().parseText(xmlToolResult.content.toString()) as Map } catch (Exception ignore) {}
+            }
+            if (resMap?.status == "SUCCESS") {
                 effectiveArtifactUri = resMap.artifactUri ?: effectiveArtifactUri
             }
         }
